@@ -190,24 +190,26 @@ Additionally, it might be interesting to test low and high values for the base r
 
 ### Trial structure
 
-Based on the insights above, lets generate a bunch of stimuli based on a narrower set of parameters. Now we'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of immunotherapy because we will always present a balanced sample. To be realistic, we'll use the actual base rate of cancer in the US in our model, which is lower than any of the values above. We will sample the effectiveness of immunotherapy in preventing cancer linearly in log odds units, since this will likely result in a more perceptually uniform sampling of causal support.
+Based on the insights above, lets generate a bunch of stimuli based on a narrower set of parameters. Now we'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of immunotherapy because we will always present a balanced sample. To be realistic, we'll use the actual base rate of cancer in the US in our model, which is lower than any of the values above. 
+<!-- We will sample the effectiveness of immunotherapy in preventing cancer linearly in log odds units, since this will likely result in a more perceptually uniform sampling of causal support. p_immun = plogis(seq(from = qlogis(0.01), to = qlogis(0.9), length.out = 4)) -->
 
 ```{r}
 # number of simulated data sets per combination of factors
-n_sims <- 100
+n_sims <- 2000
 
 # set up manipulations and simulate fake data
 stim_df <- expand.grid(
-    p_gene = 0.3,                                                                 # gene effect (control)
-    br_gene = c(0.1, 0.5),                                                        # base rate of gene (low and high)
-    p_immun = plogis(seq(from = qlogis(0.01), to = qlogis(0.9), length.out = 4)), # immunotherapy effect (4 levels)
-    br_immun = 0.5,                                                               # base rate of immunotherapy (control, no noise)
-    p_cancer = 0.004424,                                                          # actual base rate of cancer (control)
-    N = c(100, 5000)                                                              # sample size (small and large)
+    p_gene = 0.3,                    # gene effect (control)
+    br_gene = c(0.1, 0.5),           # base rate of gene (low and high)
+    p_immun = c(0, 0.25, 0.5, 0.75), # immunotherapy effect (4 levels)
+    br_immun = 0.5,                  # base rate of immunotherapy (control, no noise)
+    p_cancer = 0.004424,             # actual base rate of cancer (control)
+    N = c(100, 5000)                 # sample size (small and large)
   ) %>%
   rowwise() %>%
   mutate(
     # possible numbers of people in each cell of the two-way table
+    draw = list(1:n_sims),
     nA = list(rbinom(n_sims, round(N*br_immun), br_gene)),            # N(gene T, immunotherapy T)
     nB = list(rbinom(n_sims, round(N*br_immun), (1 - br_gene))),      # N(gene F, immunotherapy T)
     nC = list(rbinom(n_sims, round(N*(1 - br_immun)), br_gene)),      # N(gene T, immunotherapy F)
@@ -245,18 +247,18 @@ We can look at the trend across trials as a line as before, but now with uncerta
 ```{r}
 stim_df %>% 
   ggplot(aes(x = p_immun, y = ground_truth)) +
-  stat_lineribbon(.width = c(.99, .95, .8, .5), color = "black",) +
+  stat_lineribbon(.width = c(0.95, 0.8, 0.5), color = "black",) +
   scale_fill_brewer() +
   theme_bw() +
   facet_grid(br_gene ~ N)
 ```
 
-Alternatively, we can look at dotplots of individual simulated trials.
+Alternatively, we can look at quantile dotplots of simulated trials.
 
 ```{r}
 stim_df %>% 
-  ggplot(aes(x = as.factor(round(100*p_immun)/100), y = ground_truth)) +
-  stat_dots(position = "dodge", binwidth = 0.05) +
+  ggplot(aes(x = as.factor(p_immun), y = ground_truth)) +
+  stat_dots(position = "dodge", binwidth = 0.04, quantiles = 20) +
   theme_bw() +
   facet_grid(br_gene ~ N)
 ```
@@ -269,7 +271,7 @@ I propose to show eight trials of problem 1 such that we test each combination o
 
 This design should result in data that are realistically noisy and with rates of cancer that vary enough from trial to trial that it is believable that we are talking about a different gene, cancer, and immunotherapy on each trial. We will get balanced measurements of the impact of sample size and immunotherapy effectiveness on judgments. We will also be able to filter on the base rate of the gene that causes cancer to see if the prevalence of risk impacts judgments even outside of a decision-making context (just out of curiousity, although I suppose this manipulation is optional).
 
-If causal support is a good normative model for causal reasoning, we expect to see that judgments are closer to causal support when sample size is larger and when the effectiveness of the intervention is very large or very small. Another way of saying this is that error in judgments should be larger when causal support suggests ground truth probabilities closer to 0.5.
+If causal support is a good normative model for causal reasoning, we expect to see that judgments are closer to causal support when sample size is larger and when the effectiveness of the intervention is very large or very small. Another way of saying this is that error in judgments should be larger when causal support suggests ground truth probabilities closer to 0.5. An alternative interpretation of this hypothesis is that we expect causal support to predict how difficult the task is for users, which should manifest in the size of absolute errors.
 
 
 ## Problem 2: Does the gene that causes cancer also reduce the effectiveness of immunotherapy?
