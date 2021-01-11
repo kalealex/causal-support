@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<head>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/css/bootstrap.min.css" integrity="sha384-PsH8R72JQ3SOdhVi3uxftmaW6Vc51MKb0q5P2rRUpPvrszuE4W1povHYgTpBfshb" crossorigin="anonymous">
+    <style>
+        svg {
+            font: 10px sans-serif;
+        }
+
+        /* table related */
+        th, td:not(.chart) {
+            vertical-align: middle !important;
+            padding: 5px !important;
+        }
+        th.center, td.center, th.chart { 
+            text-align: center; 
+        } 
+        th.num, td.num { 
+            text-align: right;
+        }
+        tr:last-child td.chart {
+            padding: 5px 0 0 0;
+        }
+        tr:not(:last-child) td.chart {
+            padding: 0; 
+        } 
+        tr td.chart {
+            min-width: 275px;
+            max-width: 275px;
+            width: 275px;
+            vertical-align: bottom;
+        } 
+        td.chart svg {
+            overflow: visible;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>Two-way table showing sample with 55% probability that immunotherapy works</h2>
+    </div>
+    <div class="container">
+        <div id="table"></div>
+    </div>
+
+    <script src="two-way-table.js"></script>
+</body>
