@@ -3,7 +3,7 @@ const visFormat = "icons"; // "text", "icons", "bars"
 const interactive = false; // true, false
 
 // icon arrays of dots
-const dotRadius = 4; // pixels
+const dotRadius = 3; // pixels
 const fillColor = '#a034ed';
 const dotsPerLine = 50;
 
@@ -54,7 +54,7 @@ const rowHeaderFormat = [
     { head: 'Gene', cl: 'label center', colspan: 1, rowspan: 2 }
 ];
 
-const columnFormat = [
+const columns = [
     {
         head: 'Yes', cl: 'chartTreat center',  
         html: function (row, i) { 
@@ -66,6 +66,7 @@ const columnFormat = [
                 // wait until the DOM is ready so that td.chart exists
                 $(function () {
                     // select the current row's table data cell classed 'chartTreat'
+                    console.log("row number", i);
                     var currRow = document.getElementById('r' + i);
                     var chart = currRow.querySelector('.chartTreat');
                     
@@ -117,6 +118,7 @@ const columnFormat = [
                 // wait until the DOM is ready so that td.chart exists
                 $(function () {
                     // select the current row's table data cell classed 'chartTreat'
+                    console.log("row number", i);
                     var currRow = document.getElementById('r' + i);
                     var chart = currRow.querySelector('.chartNoTreat');
                     
@@ -161,7 +163,7 @@ const columnFormat = [
 
 
 // create table (main)
-var table, body, rows, updateRow;
+var table, body, rows, enterRows;
 
 $(document).ready(function() {
     // create table
@@ -184,7 +186,7 @@ $(document).ready(function() {
     // append column sub-headers
     table.append('tr')
         .selectAll('th')
-        .data(columnFormat)
+        .data(columns)
         .enter()
         .append('th')
         .attr('class', 'label center')
@@ -206,11 +208,25 @@ $(document).ready(function() {
         .attr('scope', 'rowgroup')
         .text(function (d) { return d.head; });
     
-    // select rows and bind data 
-    rows = body.selectAll('tr').data(rowData);
+    // select rows, bind data, makes sure we have the right number of elements, and join selections
+    rows = body.selectAll('tr')
+        .data(rowData)
+        .join(
+            function(enter) {
+                // append new table rows if need be
+                return enter.append('tr');
+            },
+            function(update) {
+                // will handle updating of joined set below
+                return update;
+            },
+            function(exit) {
+                // remove table rows if need be
+                return exit.remove();
+            }
+        )
 
-    // first row (update set)...
-    // number row
+    // number rows
     rows.attr('id', function (row, i) { return 'r' + i; });
     // append row sub-headers
     rows.append('th')
@@ -220,48 +236,15 @@ $(document).ready(function() {
     // append table data
     rows.selectAll('td')
         .data(function (row, i) {
-            return columnFormat.map(function (c) {
-                // use columnFormat to set cell values for this specific row
+            return columns.map(function (c) {
+                // use columns to set cell values for this specific row
                 var cell = {};
                 d3.keys(c).forEach(function (k) {
                     cell[k] = typeof c[k] == 'function' ? c[k](row, i) : c[k];
                 });
 
                 return cell;
-            }).filter(function (c) {
-                // eventually use this to handle collapse vs expand in the column dimension?
-                return true;
-            });
-        }).enter() //enter table data
-        .append('td')
-        .html(function (col) { return col.html; })
-        .attr('class', function (col) { return col.cl });
-
-    // second row (enter set)...
-    // append and select row
-    updateRow = rows.enter().append('tr');
-    // number row
-    updateRow.attr('id', function (row, i) { return 'r' + i; });
-    // append row sub-headers
-    updateRow.append('th')
-        .attr('class', 'label center')
-        .attr('scope', 'row')
-        .text(function (row) { return row.head; });        
-    // append table data
-    updateRow.selectAll('td')
-        .data(function (row, i) {
-            return columnFormat.map(function (c) {
-                // use columnFormat to set cell values for this specific row
-                var cell = {};
-                d3.keys(c).forEach(function (k) {
-                    cell[k] = typeof c[k] == 'function' ? c[k](row, i) : c[k];
-                });
-
-                return cell;
-            }).filter(function (c) {
-                // eventually use this to handle collapse vs expand in the column dimension?
-                return true;
-            });
+            })
         }).enter() //enter table data
         .append('td')
         .html(function (col) { return col.html; })
@@ -269,5 +252,5 @@ $(document).ready(function() {
 
     // caption
     table.append('caption')
-        .text("HTML tables are hard")
+        .text(interactive ? "Interactive " + visFormat : "Static " + visFormat);
 });
