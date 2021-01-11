@@ -215,7 +215,7 @@ stim_df <- expand.grid(
     nC = list(rbinom(n_sims, round(N*(1 - br_immun)), br_gene)),      # N(gene T, immunotherapy F)
     nD = list(rbinom(n_sims, round(N*(1 - br_immun)), (1 - br_gene))) # N(gene F, immunotherapy F)
   ) %>%
-  unnest(cols = c("nA", "nB", "nC", "nD")) %>%
+  unnest(cols = c("draw,", "nA", "nB", "nC", "nD")) %>%
   rowwise() %>%
   mutate(
     A = rbinom(1, nA, (p_gene + p_cancer - p_gene*p_cancer)*(1 - p_immun)), # N(cancer|gene T, immunotherapy T)
