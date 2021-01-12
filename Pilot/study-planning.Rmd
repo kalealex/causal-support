@@ -186,7 +186,7 @@ To keep things simple, we probably want to present a balanced sample on each tri
 
 Above, I've suggested that we could probably hold the following variables constant: base rate of the gene, effect of the gene, and base rate of cancer. However, if we want to sell the idea that each trial is asking about a different gene and type of cancer, we might want to add a small amount of random noise to these fixed values on each trial. Adding sampling error to our stimulus generation process will achieve this. These small variations won't impact causal support very much, and they might make the task scenario more believable.
 
-Additionally, it might be interesting to test low and high values for the base rate of the gene to see how judgments of intervention effectiveness change as a function of the prevalence of risk. Maybe instead of controlling the proportion of people that have the gene, we should pick low and high values and shuffle them across trials as an exploratory manipulation.
+Additionally, it might be interesting to test low and high values for the base rate of the gene to see how judgments of intervention effectiveness change as a function of the prevalence of risk. Maybe instead of controlling the proportion of people that have the gene, we should pick low and high values and shuffle them across trials as an exploratory manipulation. *We ended up deciding not to do this since it seems more relevant to a decision-making task than causal reasoning.*
 
 ### Trial structure
 
@@ -200,7 +200,7 @@ n_sims <- 2000
 # set up manipulations and simulate fake data
 stim_df <- expand.grid(
     p_gene = 0.3,                    # gene effect (control)
-    br_gene = c(0.1, 0.5),           # base rate of gene (low and high)
+    br_gene = 0.2,                   # base rate of gene (control)
     p_immun = c(0, 0.25, 0.5, 0.75), # immunotherapy effect (4 levels)
     br_immun = 0.5,                  # base rate of immunotherapy (control, no noise)
     p_cancer = 0.004424,             # actual base rate of cancer (control)
@@ -209,13 +209,13 @@ stim_df <- expand.grid(
   rowwise() %>%
   mutate(
     # possible numbers of people in each cell of the two-way table
-    draw = list(1:n_sims),
+    draw = list(seq(from = 1, to = n_sims, by = 1)),
     nA = list(rbinom(n_sims, round(N*br_immun), br_gene)),            # N(gene T, immunotherapy T)
     nB = list(rbinom(n_sims, round(N*br_immun), (1 - br_gene))),      # N(gene F, immunotherapy T)
     nC = list(rbinom(n_sims, round(N*(1 - br_immun)), br_gene)),      # N(gene T, immunotherapy F)
     nD = list(rbinom(n_sims, round(N*(1 - br_immun)), (1 - br_gene))) # N(gene F, immunotherapy F)
   ) %>%
-  unnest(cols = c("draw,", "nA", "nB", "nC", "nD")) %>%
+  unnest(cols = c("draw", "nA", "nB", "nC", "nD")) %>%
   rowwise() %>%
   mutate(
     A = rbinom(1, nA, (p_gene + p_cancer - p_gene*p_cancer)*(1 - p_immun)), # N(cancer|gene T, immunotherapy T)
@@ -247,10 +247,10 @@ We can look at the trend across trials as a line as before, but now with uncerta
 ```{r}
 stim_df %>% 
   ggplot(aes(x = p_immun, y = ground_truth)) +
-  stat_lineribbon(.width = c(0.95, 0.8, 0.5), color = "black",) +
+  stat_lineribbon(.width = c(0.95, 0.8, 0.5), color = "black") +
   scale_fill_brewer() +
   theme_bw() +
-  facet_grid(br_gene ~ N)
+  facet_grid(N ~ .)
 ```
 
 Alternatively, we can look at quantile dotplots of simulated trials.
@@ -260,18 +260,22 @@ stim_df %>%
   ggplot(aes(x = as.factor(p_immun), y = ground_truth)) +
   stat_dots(position = "dodge", binwidth = 0.04, quantiles = 20) +
   theme_bw() +
-  facet_grid(br_gene ~ N)
+  facet_grid(N ~ .)
 ```
 
 In both charts, we can see that we are sampling a nice range of the ground truth with this trial structure.
 
 #### Study design
 
-I propose to show eight trials of problem 1 such that we test each combination of sample size (2 levels) and immunotherapy effectiveness (4 levels). We will randomly vary the base rate of the gene that causes cancer such that the rate of the gene will be high vs low on half of trials, and the order of the high and low trials will be shuffled (randomized). On each trial, one of the simulated data sets that we generated above will be selected at random.
+For our first experiment, I propose to show eight trials of problem 1 such that we test each combination of sample size (2 levels) and immunotherapy effectiveness (4 levels). On each trial, one of the simulated data sets that we generated above will be selected at random.
 
-This design should result in data that are realistically noisy and with rates of cancer that vary enough from trial to trial that it is believable that we are talking about a different gene, cancer, and immunotherapy on each trial. We will get balanced measurements of the impact of sample size and immunotherapy effectiveness on judgments. We will also be able to filter on the base rate of the gene that causes cancer to see if the prevalence of risk impacts judgments even outside of a decision-making context (just out of curiousity, although I suppose this manipulation is optional).
+This design should result in data that are realistically noisy and with rates of cancer that vary enough from trial to trial that it is believable that we are talking about a different gene, cancer, and immunotherapy on each trial. We will get balanced measurements of the impact of sample size and immunotherapy effectiveness on judgments.
 
-If causal support is a good normative model for causal reasoning, we expect to see that judgments are closer to causal support when sample size is larger and when the effectiveness of the intervention is very large or very small. Another way of saying this is that error in judgments should be larger when causal support suggests ground truth probabilities closer to 0.5. An alternative interpretation of this hypothesis is that we expect causal support to predict how difficult the task is for users, which should manifest in the size of absolute errors.
+Assuming causal support as a normative model, we hope to learn about the ways that causal reasoning with visualizations deviate from this norm. We will explore the following research questions by gradually adding different predictors to a model predicting human judgments from causal support:
+
+- Does underestimating sample size, as found in prior work, result in perceived causal support which is less than the normative value (i.e., probabilities closed to 0.5)? Does the effect of sample size that is not already explained by normative causal support depend on the data presentation format?
+- Do people under- or over-estimate intervention effectiveness in a way that biases their causal support judgments? Underestimation would result in probabilties that are too low and overestimation would result in probabilities that are too high. Does this pattern of bias, if it exists, depend on data presentation format?
+- How does data presentation format itself influence causal induction? Is there a greater bias in some conditions? Are people's judgments more or less variable in some conditions? Specifically, how are judgments different when we show data in a *numerical table* vs a *table of icon arrays* vs a *table where the user can interactively (dis)aggregate the data by expanding or collapsing dimensions of the table* (emulating controlling for vs ignoring levels of a factor)?
 
 
 ## Problem 2: Does the gene that causes cancer also reduce the effectiveness of immunotherapy?
