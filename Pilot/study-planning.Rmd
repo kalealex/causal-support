@@ -9,6 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)
 library(tidyr)
+library(tibble)
 library(ggplot2)
 library(ggdist)
 library(RColorBrewer)
@@ -48,7 +49,7 @@ likelihood_from_monte_carlo <- function (A, nA, B, nB, C, nC, D, nD, immunothera
   # define parameters (sample from uniform distribution)
   m <- 10000             # number of simulations
   p_cancer <- runif(m)   # base rate of cancer due to unknown causes
-  p_gene <- runif(m)     # probability that gene causes cancer
+  p_gene_c <- runif(m)   # probability that gene causes cancer
   if (immunotherapy_works) {
     p_immun <- runif(m)  # probability that immunotherapy prevents cancer
   } else {
@@ -70,14 +71,14 @@ likelihood_from_monte_carlo <- function (A, nA, B, nB, C, nC, D, nD, immunothera
   
   # calculate probabilies for each possible outcome in the contingency table
   probs <- cbind(
-    (p_gene + p_cancer - p_gene*p_cancer)*(1 - p_immun),                         # p(cancer|gene T, immunotherapy T)
-    (1 - p_gene)*(1 - p_cancer) + (p_gene + p_cancer - p_gene*p_cancer)*p_immun, # p(~cancer|gene T, immunotherapy T)
-    p_cancer*(1 - p_immun),                                                      # p(cancer|gene F, immunotherapy T)
-    (1 - p_cancer) + p_cancer*p_immun,                                           # p(~cancer|gene F, immunotherapy T)
-    p_gene + p_cancer - p_gene*p_cancer,                                         # p(cancer|gene T, immunotherapy F)
-    (1 - p_gene)*(1 - p_cancer),                                                 # p(~cancer|gene T, immunotherapy F)
-    p_cancer,                                                                    # p(cancer|gene F, immunotherapy F)
-    (1 - p_cancer)                                                               # p(~cancer|gene F, immunotherapy F)
+    (p_gene_c + p_cancer - p_gene_c*p_cancer)*(1 - p_immun),                           # p(cancer|gene T, immunotherapy T)
+    (1 - p_gene_c)*(1 - p_cancer) + (p_gene_c + p_cancer - p_gene_c*p_cancer)*p_immun, # p(~cancer|gene T, immunotherapy T)
+    p_cancer*(1 - p_immun),                                                            # p(cancer|gene F, immunotherapy T)
+    (1 - p_cancer) + p_cancer*p_immun,                                                 # p(~cancer|gene F, immunotherapy T)
+    p_gene_c + p_cancer - p_gene_c*p_cancer,                                           # p(cancer|gene T, immunotherapy F)
+    (1 - p_gene_c)*(1 - p_cancer),                                                     # p(~cancer|gene T, immunotherapy F)
+    p_cancer,                                                                          # p(cancer|gene F, immunotherapy F)
+    (1 - p_cancer)                                                                     # p(~cancer|gene F, immunotherapy F)
   )
   
   # calculate log likelihood of data for each of m runs of the simulation
@@ -108,7 +109,7 @@ Here's our fake data.
 
 ```{r}
 param_space_df <- expand.grid(
-    p_gene = seq(from = 0.1, to = 0.7, by = 0.2),                      # gene effect
+    p_gene_c = seq(from = 0.1, to = 0.7, by = 0.2),                    # gene effect on cancer
     br_gene = seq(from = 0.05, to = 0.5, by = 0.15),                   # base rate of gene
     p_immun = seq(from = 0, to = 0.9, by = 0.15),                      # immunotherapy effect 
     br_immun = seq(from = 0.05, to = 0.5, by = 0.15),                  # base rate of immunotherapy
@@ -116,14 +117,14 @@ param_space_df <- expand.grid(
     N = c(100, 5000)                                                   # small and large sample size
   ) %>%
   mutate(
-    nA = round(N*br_gene*br_immun),                                    # N(gene T, immunotherapy T)
-    A = round(nA*(p_gene + p_cancer - p_gene*p_cancer)*(1 - p_immun)), # N(cancer|gene T, immunotherapy T)
-    nB = round(N*(1 - br_gene)*br_immun),                              # N(gene F, immunotherapy T)
-    B = round(nB*p_cancer*(1 - p_immun)),                              # N(cancer|gene F, immunotherapy T)
-    nC = round(N*br_gene*(1 - br_immun)),                              # N(gene T, immunotherapy F)
-    C = round(nC*(p_gene + p_cancer - p_gene*p_cancer)),               # N(cancer|gene T, immunotherapy F)
-    nD = round(N*(1 - br_gene)*(1 - br_immun)),                        # N(gene F, immunotherapy F)
-    D = round(nD*p_cancer)                                             # N(cancer|gene F, immunotherapy F)
+    nA = round(N*br_gene*br_immun),                                        # N(gene T, immunotherapy T)
+    A = round(nA*(p_gene_c + p_cancer - p_gene_c*p_cancer)*(1 - p_immun)), # N(cancer|gene T, immunotherapy T)
+    nB = round(N*(1 - br_gene)*br_immun),                                  # N(gene F, immunotherapy T)
+    B = round(nB*p_cancer*(1 - p_immun)),                                  # N(cancer|gene F, immunotherapy T)
+    nC = round(N*br_gene*(1 - br_immun)),                                  # N(gene T, immunotherapy F)
+    C = round(nC*(p_gene_c + p_cancer - p_gene_c*p_cancer)),               # N(cancer|gene T, immunotherapy F)
+    nD = round(N*(1 - br_gene)*(1 - br_immun)),                            # N(gene F, immunotherapy F)
+    D = round(nD*p_cancer)                                                 # N(cancer|gene F, immunotherapy F)
   )
 
 head(param_space_df)
@@ -148,7 +149,7 @@ To start, let's see how sample size and the base rates of the gene and immunothe
 
 ```{r}
 param_space_df %>% 
-  filter(p_gene == 0.1, p_cancer == 0.01) %>%
+  filter(p_gene_c == 0.1, p_cancer == 0.01) %>%
   ggplot(aes(x = p_immun, y = ground_truth, color = as.factor(N))) +
   geom_line() +
   theme_bw() +
@@ -171,7 +172,7 @@ param_space_df %>%
   ggplot(aes(x = p_immun, y = ground_truth, color = as.factor(N))) +
   geom_line() +
   theme_bw() +
-  facet_grid(p_gene ~ p_cancer)
+  facet_grid(p_gene_c ~ p_cancer)
 ```
 
 We can see that the normative response may be slightly more certain when the effect of the gene (rows) is larger, but the impacts are small and don't seem to be monotonic. Griffiths and Tenenbaum talk about this as a unique prediction of causal support compared to other models of causal induction. *We would probably only want to manipulate the effect of the gene if we think that predicting this monotonacity is important to our findings.*
@@ -191,46 +192,54 @@ Additionally, it might be interesting to test low and high values for the base r
 ### Trial structure
 
 Based on the insights above, lets generate a bunch of stimuli based on a narrower set of parameters. Now we'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of immunotherapy because we will always present a balanced sample. To be realistic, we'll use the actual base rate of cancer in the US in our model, which is lower than any of the values above. 
-<!-- We will sample the effectiveness of immunotherapy in preventing cancer linearly in log odds units, since this will likely result in a more perceptually uniform sampling of causal support. p_immun = plogis(seq(from = qlogis(0.01), to = qlogis(0.9), length.out = 4)) -->
 
 ```{r}
 # number of simulated data sets per combination of factors
 n_sims <- 2000
 
 # set up manipulations and simulate fake data
-stim_df <- expand.grid(
-    p_gene = 0.3,                    # gene effect (control)
+stim1_df <- expand.grid(
+    p_gene_c = 0.3,                  # gene effect on cancer (control)
     br_gene = 0.2,                   # base rate of gene (control)
     p_immun = c(0, 0.25, 0.5, 0.75), # immunotherapy effect (4 levels)
     br_immun = 0.5,                  # base rate of immunotherapy (control, no noise)
     p_cancer = 0.004424,             # actual base rate of cancer (control)
-    N = c(100, 5000)                 # sample size (small and large)
+    N = c(100, 2000, 5000, 10000)    # sample size (4 levels)
   ) %>%
+  rowid_to_column("trialIdx") %>%
   rowwise() %>%
   mutate(
-    # possible numbers of people in each cell of the two-way table
+    # get a balanced sample of people do and do not receive treatment
+    nTreat = round(N*br_immun),  
+    nNoTreat = round(N*(1 - br_immun)),
+    # sample possible numbers of people in each group who have the gene
     draw = list(seq(from = 1, to = n_sims, by = 1)),
-    nA = list(rbinom(n_sims, round(N*br_immun), br_gene)),            # N(gene T, immunotherapy T)
-    nB = list(rbinom(n_sims, round(N*br_immun), (1 - br_gene))),      # N(gene F, immunotherapy T)
-    nC = list(rbinom(n_sims, round(N*(1 - br_immun)), br_gene)),      # N(gene T, immunotherapy F)
-    nD = list(rbinom(n_sims, round(N*(1 - br_immun)), (1 - br_gene))) # N(gene F, immunotherapy F)
+    nA = list(rbinom(n_sims, nTreat, br_gene)),      # N(gene T, immunotherapy T)
+    nC = list(rbinom(n_sims, nNoTreat, br_gene)) # N(gene T, immunotherapy F)
   ) %>%
-  unnest(cols = c("draw", "nA", "nB", "nC", "nD")) %>%
+  unnest(cols = c("draw", "nA", "nC")) %>%
+  mutate(
+    # calculate number of people in each group who DO NOT have the gene for each draw
+    nB = nTreat - nA,  # N(gene F, immunotherapy T)
+    nD = nNoTreat - nC # N(gene F, immunotherapy F)
+  ) %>%
   rowwise() %>%
   mutate(
-    A = rbinom(1, nA, (p_gene + p_cancer - p_gene*p_cancer)*(1 - p_immun)), # N(cancer|gene T, immunotherapy T)
-    B = rbinom(1, nB, p_cancer*(1 - p_immun)),                              # N(cancer|gene F, immunotherapy T)
-    C = rbinom(1, nC, (p_gene + p_cancer - p_gene*p_cancer)),               # N(cancer|gene T, immunotherapy F)
-    D = rbinom(1, nD, p_cancer)                                             # N(cancer|gene F, immunotherapy F)
-  )
+    A = rbinom(1, nA, (p_gene_c + p_cancer - p_gene_c*p_cancer)*(1 - p_immun)), # N(cancer|gene T, immunotherapy T)
+    B = rbinom(1, nB, p_cancer*(1 - p_immun)),                                  # N(cancer|gene F, immunotherapy T)
+    C = rbinom(1, nC, (p_gene_c + p_cancer - p_gene_c*p_cancer)),               # N(cancer|gene T, immunotherapy F)
+    D = rbinom(1, nD, p_cancer)                                                 # N(cancer|gene F, immunotherapy F)
+  ) %>%
+  # drop intermediate calculations
+  select(-one_of(c("nTreat", "nNoTreat")))
 
-head(stim_df)
+head(stim1_df)
 ```
 
 Now, let's calculate causal support for each simulated data set.
 
 ```{r}
-stim_df = stim_df %>%
+stim1_df = stim1_df %>%
   rowwise() %>%
   mutate(
     # calculate causal support for each row difference of log likelihoods is a log odds ratio
@@ -240,12 +249,75 @@ stim_df = stim_df %>%
   )
 ```
 
+While we want our stimuli to reflect natural sampling error, we also want to counterbalance that sampling error within each data condition across participants. In order to do this, we'll reduce our stimulus data from a distribution of draws to a set of quantiles of ground truth causal support that we can sample systematically.
+
+```{r}
+# generate a list of probabilities corresponding to a number of quantiles equal to the number of unique data conditions
+n_quantiles <- max(stim1_df$trialIdx)
+p <- ppoints(n_quantiles)
+
+# generate a dataframe containing quantiles for each data condition
+quantiles1_df <- stim1_df %>%
+  group_by(trialIdx) %>%
+  summarise(
+    qIdx = list(seq(from = 1, to = n_quantiles, by = 1)),
+    q = list(quantile(causal_support, p))
+  )
+
+# filter draws of possible stimuli to include only our quantiles
+stim1_df = stim1_df %>%
+  # first we need to group our stimuli dataframe the same way as our quantile dataframe without loosing any columns
+  group_by(trialIdx, p_gene_c, br_gene, p_immun, br_immun, p_cancer, N) %>%
+  summarise(
+    draw = list(draw),
+    nA = list(nA),
+    nB = list(nB),
+    nC = list(nC),
+    nD = list(nD),
+    A = list(A),
+    B = list(B),
+    C = list(C),
+    D = list(D),
+    causal_support = list(causal_support),
+    ground_truth = list(ground_truth)
+  ) %>%
+  # join stimuli data with quantiles, and make rows represent data conditions x quantiles
+  full_join(quantiles1_df, by = c("trialIdx")) %>%
+  unnest(cols = c("qIdx","q")) %>%
+  # find the draws that are closest to our quantiles for each data condition
+  rowwise() %>%
+  mutate(
+    draws_diff_from_q = list(lapply(causal_support, function(x) abs(x - q) )),
+    which_draw = which.min(unlist(draws_diff_from_q)),
+    draw = draw[[which_draw]],
+    nA = nA[[which_draw]],
+    nB = nB[[which_draw]],
+    nC = nC[[which_draw]],
+    nD = nD[[which_draw]],
+    A = A[[which_draw]],
+    B = B[[which_draw]],
+    C = C[[which_draw]],
+    D = D[[which_draw]],
+    causal_support = causal_support[[which_draw]],
+    ground_truth = ground_truth[[which_draw]]
+  ) %>%
+  # drop the columns we no longer need at this point
+  select(-one_of(c("draw", "which_draw", "q", "draws_diff_from_q")))
+```
+
+We save this data to generate stimuli during the experiment.
+
+```{r}
+# save data as json
+# write.csv(stim1_df, "stimdata1.csv", quote = FALSE)
+```
+
 Now, let's visualize the ground truth probability that immunotherapy works, which is derived from causal support, as a function of our manipulations to see how difficult our task setup is.
 
 We can look at the trend across trials as a line as before, but now with uncertainty due to simulated sampling error.
 
 ```{r}
-stim_df %>% 
+stim1_df %>% 
   ggplot(aes(x = p_immun, y = ground_truth)) +
   stat_lineribbon(.width = c(0.95, 0.8, 0.5), color = "black") +
   scale_fill_brewer() +
@@ -256,26 +328,14 @@ stim_df %>%
 Alternatively, we can look at quantile dotplots of simulated trials.
 
 ```{r}
-stim_df %>% 
+stim1_df %>% 
   ggplot(aes(x = as.factor(p_immun), y = ground_truth)) +
-  stat_dots(position = "dodge", binwidth = 0.04, quantiles = 20) +
+  stat_dots(position = "dodge", binwidth = 0.04, quantiles = n_quantiles) +
   theme_bw() +
   facet_grid(N ~ .)
 ```
 
 In both charts, we can see that we are sampling a nice range of the ground truth with this trial structure.
-
-#### Study design
-
-For our first experiment, I propose to show eight trials of problem 1 such that we test each combination of sample size (2 levels) and immunotherapy effectiveness (4 levels). On each trial, one of the simulated data sets that we generated above will be selected at random.
-
-This design should result in data that are realistically noisy and with rates of cancer that vary enough from trial to trial that it is believable that we are talking about a different gene, cancer, and immunotherapy on each trial. We will get balanced measurements of the impact of sample size and immunotherapy effectiveness on judgments.
-
-Assuming causal support as a normative model, we hope to learn about the ways that causal reasoning with visualizations deviate from this norm. We will explore the following research questions by gradually adding different predictors to a model predicting human judgments from causal support:
-
-- Does underestimating sample size, as found in prior work, result in perceived causal support which is less than the normative value (i.e., probabilities closed to 0.5)? Does the effect of sample size that is not already explained by normative causal support depend on the data presentation format?
-- Do people under- or over-estimate intervention effectiveness in a way that biases their causal support judgments? Underestimation would result in probabilties that are too low and overestimation would result in probabilities that are too high. Does this pattern of bias, if it exists, depend on data presentation format?
-- How does data presentation format itself influence causal induction? Is there a greater bias in some conditions? Are people's judgments more or less variable in some conditions? Specifically, how are judgments different when we show data in a *numerical table* vs a *table of icon arrays* vs a *table where the user can interactively (dis)aggregate the data by expanding or collapsing dimensions of the table* (emulating controlling for vs ignoring levels of a factor)?
 
 
 ## Problem 2: Does the gene that causes cancer also reduce the effectiveness of immunotherapy?
@@ -284,5 +344,251 @@ The copy for this problem will be something like: *"Scientists have found a gene
 
 ### Monte Carlo simulation
 
-We'll need to set up an additional Monte Carlo simulation to represent the case where there is a confounding effect of the gene on an immunotherapy that is known to be effective...
+We'll need to set up an additional Monte Carlo simulation to represent the case where there is a confounding effect of the gene on an immunotherapy that is known to be effective.
 
+```{r}
+# expects data as counts from a two-way table formatted as follows:
+#   A   - count with cancer given gene T and immunotherapy T
+#   nA  - total given gene T and immunotherapy T
+#   B   - count with cancer given gene F and immunotherapy T
+#   nB  - total given gene F and immunotherapy T
+#   C   - count with cancer given gene T and immunotherapy F
+#   nC  - total given gene T and immunotherapy F
+#   D   - count with cancer given gene F and immunotherapy F
+#   nD  - total given gene F and immunotherapy F
+# the boolean immunotherapy_works determines which DAG is simulated
+likelihood_from_monte_carlo_confounding <- function (A, nA, B, nB, C, nC, D, nD, immunotherapy_works = TRUE) {
+  # define parameters (sample from uniform distribution)
+  m <- 10000             # number of simulations
+  p_cancer <- runif(m)   # base rate of cancer due to unknown causes
+  p_gene_c <- runif(m)   # probability that gene causes cancer
+  p_gene_i <- runif(m)   # probability that gene prevents immunotherapy from working
+  if (immunotherapy_works) {
+    p_immun <- runif(m)  # probability that immunotherapy prevents cancer
+  } else {
+    p_immun <- rep(0, m) # immunotherapy has no effect on cancer
+  }
+  
+  
+  # calculate counts for each possible outcome in the contingengy table
+  counts <- cbind(
+    A,
+    nA - A,
+    B,
+    nB - B,
+    C,
+    nC - C,
+    D,
+    nD - D
+  )
+  
+  # calculate probabilies for each possible outcome in the contingency table
+  probs <- cbind(
+    # p(cancer|gene T, immunotherapy T)
+    (p_gene_c + p_cancer - p_gene_c*p_cancer)*((1 - p_immun) + p_immun*p_gene_i), # see notes below
+    # p(~cancer|gene T, immunotherapy T)
+    (1 - p_gene_c)*(1 - p_cancer) + (p_gene_c + p_cancer - p_gene_c*p_cancer)*(p_immun*(1 - p_gene_i)),
+    # p(cancer|gene F, immunotherapy T)
+    p_cancer*(1 - p_immun),
+    # p(~cancer|gene F, immunotherapy T)
+    (1 - p_cancer) + p_cancer*p_immun, 
+    # p(cancer|gene T, immunotherapy F)
+    p_gene_c + p_cancer - p_gene_c*p_cancer,
+    # p(~cancer|gene T, immunotherapy F)
+    (1 - p_gene_c)*(1 - p_cancer),
+    # p(cancer|gene F, immunotherapy F)
+    p_cancer, 
+    # p(~cancer|gene F, immunotherapy F)
+    (1 - p_cancer)
+  )
+  # What is the probability that immunotherapy doesn't prevent cancer in the presence of the gene? (tried the following option in sequence)
+  # ((1 - p_immun)*(1 - p_gene_i) + p_immun*p_gene_i - (1 - p_immun)*p_gene_i) produces negative numbers
+  # ((1 - p_immun)*(1 - p_gene_i) + p_immun*p_gene_i) removed term that is giving negative values, but then the first term seems to narrow and probably should not be conditioned on the gene. immmunotherapy that doesn't work won't interact with the gene
+  # ((1 - p_immun) + p_immun*p_gene_i) removed condition on first term, so it represents probability that immunotherapy fails regardless of gene
+  # ((1 - p_immun) + p_immun*p_gene_i - (1 - p_immun)*p_gene_i) tried again to account for fact that failure is never due to both causes, but this parameterization never produced positive causal support for a known data generating process. this seems obviously wrong
+  # I ended up running with the third option.
+  
+  # calculate log likelihood of data for each of m runs of the simulation
+  loglik <- rowSums(matrix(rep(counts, m), nrow = m, ncol = 8, byrow = TRUE) * log(probs))
+  # normalize by maximum likelihood to make probabilities comparable across Monte Carlo simulations
+  # and marginalize over simulated parameter values
+  logmax <- max(loglik)
+  logscore <- logmax + log(sum(exp(loglik - logmax))) - log(m)
+}
+```
+
+### Trial structure
+
+Similar to the set up for problem 1, lets generate a bunch of stimuli while only manipulating a few parameters. We'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of immunotherapy because we will always present a close-to-balanced sample. To be realistic, we'll use the actual base rate of cancer in the US in our model. *The only parameter we are adding here is that in some cases the presence of the gene prevents the immunotherapy from working. We are now holding the effectiveness of immunotherapy constant such that it prevents cancer 50% of the time.*
+
+```{r}
+# number of simulated data sets per combination of factors
+n_sims <- 2000
+
+# set up manipulations and simulate fake data
+stim2_df <- expand.grid(
+    p_gene_c = 0.3,                   # gene effect on cancer (control)
+    p_gene_i = c(0, 0.25, 0.5, 0.75), # gene effect on immunotherapy (4 levels)
+    br_gene = 0.2,                    # base rate of gene (control)
+    p_immun = 0.75,                   # immunotherapy effect (control now)
+    br_immun = 0.5,                   # base rate of immunotherapy (control, no noise)
+    p_cancer = 0.004424,              # actual base rate of cancer (control)
+    N = c(100, 2000, 5000, 10000)     # sample size (4 levels)
+  ) %>%
+  rowid_to_column("trialIdx") %>%
+  rowwise() %>%
+  mutate(
+    # get a balanced sample of people do and do not receive treatment
+    nTreat = round(N*br_immun),  
+    nNoTreat = round(N*(1 - br_immun)),
+    # sample possible numbers of people in each group who have the gene
+    draw = list(seq(from = 1, to = n_sims, by = 1)),
+    nA = list(rbinom(n_sims, nTreat, br_gene)),      # N(gene T, immunotherapy T)
+    nC = list(rbinom(n_sims, nNoTreat, br_gene)) # N(gene T, immunotherapy F)
+  ) %>%
+  unnest(cols = c("draw", "nA", "nC")) %>%
+  mutate(
+    # calculate number of people in each group who DO NOT have the gene for each draw
+    nB = nTreat - nA,  # N(gene F, immunotherapy T)
+    nD = nNoTreat - nC # N(gene F, immunotherapy F)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # N(cancer|gene T, immunotherapy T)
+    A = rbinom(1, nA, (p_gene_c + p_cancer - p_gene_c*p_cancer)*((1 - p_immun) + p_immun*p_gene_i)), 
+    # N(cancer|gene F, immunotherapy T)
+    B = rbinom(1, nB, p_cancer*(1 - p_immun)), 
+    # N(cancer|gene T, immunotherapy F)
+    C = rbinom(1, nC, (p_gene_c + p_cancer - p_gene_c*p_cancer)),
+    # N(cancer|gene F, immunotherapy F)
+    D = rbinom(1, nD, p_cancer)
+  ) %>%
+  # drop intermediate calculations
+  select(-one_of(c("nTreat", "nNoTreat")))
+
+head(stim2_df)
+```
+
+Now, let's calculate causal support for each simulated data set, this time assuming that the immunotherapy works and weighing evidence for or against a confounding backdoor path.
+
+```{r}
+stim2_df = stim2_df %>%
+  rowwise() %>%
+  mutate(
+    # calculate causal support for each row (difference of log likelihoods is a log odds ratio)
+    causal_support = likelihood_from_monte_carlo_confounding(A, nA, B, nB, C, nC, D, nD, TRUE) - likelihood_from_monte_carlo(A, nA, B, nB, C, nC, D, nD, TRUE), 
+    # convert causal support into normative probability judgment
+    ground_truth = plogis(causal_support)
+  )
+```
+
+While we want our stimuli to reflect natural sampling error, we also want to counterbalance that sampling error within each data condition across participants. In order to do this, we'll reduce our stimulus data from a distribution of draws to a set of quantiles of ground truth causal support that we can sample systematically.
+
+```{r}
+# generate a list of probabilities corresponding to a number of quantiles equal to the number of unique data conditions
+n_quantiles <- max(stim2_df$trialIdx)
+p <- ppoints(n_quantiles)
+
+# generate a dataframe containing quantiles for each data condition
+quantiles2_df <- stim2_df %>%
+  group_by(trialIdx) %>%
+  summarise(
+    qIdx = list(seq(from = 1, to = n_quantiles, by = 1)),
+    q = list(quantile(causal_support, p))
+  )
+
+# filter draws of possible stimuli to include only our quantiles
+stim2_df = stim2_df %>%
+  # first we need to group our stimuli dataframe the same way as our quantile dataframe without loosing any columns
+  group_by(trialIdx, p_gene_c, p_gene_i, br_gene, p_immun, br_immun, p_cancer, N) %>%
+  summarise(
+    draw = list(draw),
+    nA = list(nA),
+    nB = list(nB),
+    nC = list(nC),
+    nD = list(nD),
+    A = list(A),
+    B = list(B),
+    C = list(C),
+    D = list(D),
+    causal_support = list(causal_support),
+    ground_truth = list(ground_truth)
+  ) %>%
+  # join stimuli data with quantiles, and make rows represent data conditions x quantiles
+  full_join(quantiles2_df, by = c("trialIdx")) %>%
+  unnest(cols = c("qIdx","q")) %>%
+  # find the draws that are closest to our quantiles for each data condition
+  rowwise() %>%
+  mutate(
+    draws_diff_from_q = list(lapply(causal_support, function(x) abs(x - q) )),
+    which_draw = which.min(unlist(draws_diff_from_q)),
+    draw = draw[[which_draw]],
+    nA = nA[[which_draw]],
+    nB = nB[[which_draw]],
+    nC = nC[[which_draw]],
+    nD = nD[[which_draw]],
+    A = A[[which_draw]],
+    B = B[[which_draw]],
+    C = C[[which_draw]],
+    D = D[[which_draw]],
+    causal_support = causal_support[[which_draw]],
+    ground_truth = ground_truth[[which_draw]]
+  ) %>%
+  # drop the columns we no longer need at this point
+  select(-one_of(c("draw", "which_draw", "q", "draws_diff_from_q")))
+```
+
+We save this data to generate stimuli during the experiment.
+
+```{r}
+# save data as json
+# write.csv(stim2_df, "stimdata2.csv", quote = FALSE)
+```
+
+Now, let's visualize the ground truth probability that the gene prevents immunotherapy from working, which is derived from causal support, as a function of our manipulations to see how difficult our task setup is.
+
+We can look at the trend across trials as a line as before, but now with uncertainty due to simulated sampling error.
+
+```{r}
+stim2_df %>% 
+  ggplot(aes(x = p_gene_i, y = ground_truth)) +
+  stat_lineribbon(.width = c(0.95, 0.8, 0.5), color = "black") +
+  scale_fill_brewer() +
+  theme_bw() +
+  facet_grid(N ~ .)
+```
+
+Alternatively, we can look at quantile dotplots of simulated trials.
+
+```{r}
+stim2_df %>% 
+  ggplot(aes(x = as.factor(p_gene_i), y = ground_truth)) +
+  stat_dots(position = "dodge", binwidth = 0.04, quantiles = n_quantiles) +
+  theme_bw() +
+  facet_grid(N ~ .)
+```
+
+In both charts, we can see that we are sampling a nice range of the ground truth with this trial structure.
+
+
+## Study design
+
+### Experiment 1
+
+For our first experiment, we'll focus on how well participants can perform causal inference on Problem 1. I propose to show 16 trials such that we test each combination of sample size (4 levels) and immunotherapy effectiveness (4 levels). These 16 trials are our data conditions, and their order will be randomized for each participant.
+
+At the beginning of the HIT, each participant will be assigned to a specific pairing of quantiles and data conditions, such that quantiles of sampling error are counterbalanced within each data condition. This way the fake data sets we simulated to represent natural sampling error for a given data condition will be sampled systematically across participants, rather than randomly. Hopefully, this means that (1) our sampling of causal support within participants will not be clumpy, which would lead to issues with model fit, and (2) the effects of sampling error on what users actually see will be randomized across participants, which should prevent bias in population-level inferences about how the parameters and sample sizes used to generate each data condition might impact causal reasoning beyond what is accounted for my causal support as a normative model.
+
+This design should result in data that are realistically noisy (with contingency table data that vary enough from trial to trial) that it is believable that we are talking about a different gene, cancer, and immunotherapy on each trial. We will get balanced measurements of the impact of sample size and immunotherapy effectiveness on judgments.
+
+Assuming causal support as a normative model, we hope to learn about the ways that causal reasoning with visualizations deviates from this norm. We will explore the following research questions by gradually adding different predictors to a model predicting human judgments from causal support:
+
+- Does underestimating sample size, as found in prior work, result in perceived causal support which is less than the normative value (i.e., probabilities closer to 0.5)? Does the effect of sample size that is not already explained by normative causal support depend on the data presentation format?
+- Do people under- or over-estimate intervention effectiveness in a way that biases their causal support judgments? Underestimation would result in probabilties that are too low and overestimation would result in probabilities that are too high. Does this pattern of bias, if it exists, depend on data presentation format?
+- How does data presentation format itself influence causal induction? Is there a greater bias in some conditions? Are people's judgments more or less variable in some conditions? Specifically, how are judgments different when we show data in a *numerical table* vs a *table of icon arrays* vs a *table where the user can interactively (dis)aggregate the data by expanding or collapsing dimensions of the table* (emulating controlling for vs ignoring levels of a factor)?
+
+### Experiment 2
+
+Our second experiment will be a replication of the first experiment but with the much more difficult Problem 2. Instead of varying the effectiveness of immunotherapy, we will vary the probability that the gene prevents the immunotherapy from being effective.
+
+We are looking to see if our results replicate when the causal reasoning task is to detect confounding in the presence of a known treatment effect and covariate. If results are substantially different from experiment 1, this will reveal that the biases we see do not generalize across causal reasoning scenarios. If results are similar, it suggests that people's causal reasoning is pretty stable across different tasks where they need to look for different cues in the data in order to infer the underlying structure.
