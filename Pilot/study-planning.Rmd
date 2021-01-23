@@ -13,6 +13,7 @@ library(tibble)
 library(ggplot2)
 library(ggdist)
 library(RColorBrewer)
+set.seed(1234)
 ```
 
 ## Overview: Causal support as benchmark for causal induction
@@ -200,11 +201,11 @@ n_sims <- 2000
 # set up manipulations and simulate fake data
 stim1_df <- expand.grid(
     p_gene_c = 0.3,                  # gene effect on cancer (control)
-    br_gene = 0.2,                   # base rate of gene (control)
-    p_immun = c(0, 0.25, 0.5, 0.75), # immunotherapy effect (4 levels)
+    br_gene = 0.4,                   # base rate of gene (control)
+    p_immun = c(0, 0.1, 0.3, 0.4),   # immunotherapy effect (4 levels)
     br_immun = 0.5,                  # base rate of immunotherapy (control, no noise)
     p_cancer = 0.004424,             # actual base rate of cancer (control)
-    N = c(100, 2000, 5000, 10000)    # sample size (4 levels)
+    N = c(100, 500, 1000, 5000)      # sample size (4 levels)
   ) %>%
   rowid_to_column("trialIdx") %>%
   rowwise() %>%
@@ -305,13 +306,6 @@ stim1_df = stim1_df %>%
   select(-one_of(c("draw", "which_draw", "q", "draws_diff_from_q")))
 ```
 
-We save this data to generate stimuli during the experiment.
-
-```{r}
-# save data as json
-# write.csv(stim1_df, "stimdata1.csv", quote = FALSE)
-```
-
 Now, let's visualize the ground truth probability that immunotherapy works, which is derived from causal support, as a function of our manipulations to see how difficult our task setup is.
 
 We can look at the trend across trials as a line as before, but now with uncertainty due to simulated sampling error.
@@ -335,7 +329,20 @@ stim1_df %>%
   facet_grid(N ~ .)
 ```
 
-In both charts, we can see that we are sampling a nice range of the ground truth with this trial structure.
+In both charts, we can see that we are sampling a nice range of the ground truth with this trial structure. 
+
+Let's check that half of these data conditions fall on either side of causal support of 0, ground truth of 0.5. *Finding combinations of `p_immun` and `N` that meet this criterion was a matter of trial and error.*
+
+```{r}
+sum(stim1_df$causal_support > 0) / length(stim1_df$causal_support)
+```
+
+We save this data to generate stimuli during the experiment.
+
+```{r}
+# save data as json
+# write.csv(stim1_df, "stimdata1.csv", quote = FALSE)
+```
 
 
 ## Problem 2: Does the gene that causes cancer also reduce the effectiveness of immunotherapy?
@@ -428,12 +435,12 @@ n_sims <- 2000
 # set up manipulations and simulate fake data
 stim2_df <- expand.grid(
     p_gene_c = 0.3,                   # gene effect on cancer (control)
-    p_gene_i = c(0, 0.25, 0.5, 0.75), # gene effect on immunotherapy (4 levels)
-    br_gene = 0.2,                    # base rate of gene (control)
-    p_immun = 0.75,                   # immunotherapy effect (control now)
+    p_gene_i = c(0, 0.2, 0.6, 0.8),   # gene effect on immunotherapy (4 levels)
+    br_gene = 0.4,                    # base rate of gene (control)
+    p_immun = 0.8,                    # immunotherapy effect (control now)
     br_immun = 0.5,                   # base rate of immunotherapy (control, no noise)
     p_cancer = 0.004424,              # actual base rate of cancer (control)
-    N = c(100, 2000, 5000, 10000)     # sample size (4 levels)
+    N = c(100, 500, 2000, 5000)       # sample size (4 levels)
   ) %>%
   rowid_to_column("trialIdx") %>%
   rowwise() %>%
@@ -538,13 +545,6 @@ stim2_df = stim2_df %>%
   select(-one_of(c("draw", "which_draw", "q", "draws_diff_from_q")))
 ```
 
-We save this data to generate stimuli during the experiment.
-
-```{r}
-# save data as json
-# write.csv(stim2_df, "stimdata2.csv", quote = FALSE)
-```
-
 Now, let's visualize the ground truth probability that the gene prevents immunotherapy from working, which is derived from causal support, as a function of our manipulations to see how difficult our task setup is.
 
 We can look at the trend across trials as a line as before, but now with uncertainty due to simulated sampling error.
@@ -570,6 +570,18 @@ stim2_df %>%
 
 In both charts, we can see that we are sampling a nice range of the ground truth with this trial structure.
 
+Let's check that half of these data conditions fall on either side of causal support of 0, ground truth of 0.5. *Finding combinations of `p_gene_i` and `N` that meet this criterion was a matter of trial and error.*
+
+```{r}
+sum(stim2_df$causal_support > 0) / length(stim2_df$causal_support)
+```
+
+We save this data to generate stimuli during the experiment.
+
+```{r}
+# save data as json
+# write.csv(stim2_df, "stimdata2.csv", quote = FALSE)
+```
 
 ## Study design
 
