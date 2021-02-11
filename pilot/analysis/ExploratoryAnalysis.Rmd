@@ -29,6 +29,38 @@ df = df %>% filter(trial != "practice")
 ```
 
 
+### Exclusions
+
+Let's play with some possible exclusion criteria. When exploring exclusion criteria, I apply it here, and then I render the rest of the document to see the consequences.
+
+What I've decided on provisionally is excluding people who miss either the trial where causal support is the largest or the trial where causal support is smallest. We will create attention check trials specifically for these exclusions when we run our experiment (so we don't condition inclusion on the outcome we are modeling).
+
+```{r}
+exclude_df <- df %>%
+  group_by(workerId) %>%
+  summarise(
+    max_trial_idx = which(causal_support == max(causal_support)),
+    max_trial_gt = ground_truth[[max_trial_idx]],
+    max_trial_resp = response_A[[max_trial_idx]],
+    min_trial_idx = which(causal_support == min(causal_support)),
+    min_trial_gt = ground_truth[[min_trial_idx]],
+    min_trial_resp = response_A[[min_trial_idx]],
+    exclude = max_trial_resp < 50 | min_trial_resp > 75
+  )
+
+head(exclude_df)
+```
+
+<!-- Apply the exclusion criteria. -->
+
+<!-- ```{r} -->
+<!-- df = exclude_df %>% -->
+<!--   select(workerId, exclude) %>% -->
+<!--   full_join(df, by = "workerId") %>% -->
+<!--   filter(!exclude) %>% -->
+<!--   select(-exclude) -->
+<!-- ``` -->
+
 
 ### Performance
 
@@ -280,7 +312,7 @@ df %>%
 
 Education and chart use are the only demographic variables that we collected which I would expect to have an impact on performance.
 
-Let's check out the relationships of those variables with avg absolute error.
+Let's check out the relationships of those variables with avg absolute error. (These charts no longer work after exclusions because, we don't have enough data.)
 
 ```{r}
 df %>% 

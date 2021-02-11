@@ -339,12 +339,9 @@ sum(stim1_df$causal_support > 0) / length(stim1_df$causal_support)
 
 
 ```{r}
-# mean(stim1_df$C + stim1_df$D)
-# mean((stim1_df$nC - stim1_df$C) + (stim1_df$nD - stim1_df$D))
-# 
-# mean(stim1_df$A + stim1_df$B + stim1_df$C + stim1_df$D)
-# mean((stim1_df$nA - stim1_df$A) + (stim1_df$nB - stim1_df$B) + (stim1_df$nC - stim1_df$C) + (stim1_df$nD - stim1_df$D))
+# stim1_df <- read_csv("/Users/kalea/Code/Projects/Temp/causal-support-experiment-interface/app/main/stimdata1.csv")
 
+# set prior for vsups
 stim1_df %>% 
   filter(p_immun == 0) %>%
   mutate(
@@ -356,6 +353,48 @@ stim1_df %>%
     alpha = mean(alpha),
     beta = mean(beta)
   )
+
+# set maxN for non-interactive colormaps with scales fixed
+stim1_df %>% 
+  mutate(
+    maxN = max(nA, nB, nC, nD)
+  ) %>%
+  select(maxN) %>%
+  max()
+
+# set maxCount for non-interactive bars with scales fixed
+stim1_df %>% 
+  mutate(
+    maxCount = max(A, B, C, D, (nA - A), (nB - B), (nC - C), (nD - D))
+  ) %>%
+  select(maxCount) %>%
+  max()
+
+# set maxCount for interactive bars with scales fixed
+stim1_df %>% 
+  mutate(
+    maxCount = max(A + B + C + D, (nA - A) + (nB - B) + (nC - C) + (nD - D))
+  ) %>%
+  select(maxCount) %>%
+  max()
+
+# export to tableau
+export_df = stim1_df %>%
+  mutate(
+    .A = nA - A,
+    .B = nB - B,
+    .C = nC - C,
+    .D = nD - D,
+  ) %>%
+  pivot_longer(cols = c(A, .A, B, .B, C, .C, D, .D), names_to = "outcome", values_to = "count") %>%
+  rowwise() %>%
+  mutate(
+    Immunotherapy = if_else(outcome == "A" || outcome == ".A" || outcome == "B" || outcome == ".B", "Yes", "No"),
+    Gene = if_else(outcome == "A" || outcome == ".A" || outcome == "C" || outcome == ".C", "Yes", "No"),
+    Cancer = if_else(outcome == "A" || outcome == "B" || outcome == "C" || outcome == "D", "Yes", "No")
+  ) %>%
+  uncount(count)
+write_csv(export_df, "tidystimdata1.csv")
 ```
 
 
