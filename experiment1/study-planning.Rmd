@@ -1,5 +1,5 @@
 ---
-title: "Causal Support: Stimuli and Task Structure"
+title: "Causal Support: E1 Stimuli and Task Structure"
 author: "Alex Kale"
 date: "`r Sys.Date()`"
 output: html_document
@@ -97,7 +97,7 @@ Now we can generate fake data sets and calculate how much causal support there i
 
 ### Trial structure
 
-Lets generate a bunch of stimuli based on a set of parameters. Now we'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of treatment because we will always present a balanced sample. To be realistic, we'll use the actual base rate of disease in the US in our model, which is lower than any of the values above. 
+Lets generate a bunch of stimuli based on a set of parameters. We'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of treatment because we will always present a balanced sample.
 
 ```{r}
 # number of simulated data sets per combination of factors
@@ -304,6 +304,20 @@ stim1_df %>%
 stim1_df %>% 
   mutate(
     maxCount = max(count_nGnT + count_nGT + count_GnT + count_GT, (total_nGnT - count_nGnT) + (total_nGT - count_nGT) + (total_GnT - count_GnT) +  (total_GT - count_GT))
+  ) %>%
+  select(maxCount) %>%
+  max()
+
+# set maxCount for crossfilter bars with scales fixed
+stim1_df %>% 
+  mutate(
+    maxCount = max(
+      total_nGnT + total_nGT, 
+      total_GnT + total_GT,
+      total_nGnT + total_GnT, 
+      total_nGT + total_GT,
+      count_nGnT + count_nGT + count_GnT + count_GT,
+      (total_nGnT - count_nGnT) + (total_nGT - count_nGT) + (total_GnT - count_GnT) +  (total_GT - count_GT))
   ) %>%
   select(maxCount) %>%
   max()

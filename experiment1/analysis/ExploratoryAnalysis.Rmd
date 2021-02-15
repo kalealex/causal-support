@@ -1,0 +1,342 @@
+---
+title: "Exploratory Analysis"
+author: "Alex Kale"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(ggdist)
+# library(RColorBrewer)
+```
+
+## Exploratory Analysis
+
+Load data.
+
+```{r}
+df <- read_csv("pilot-anonymous.csv")
+
+head(df)
+```
+Drop practice trial.
+
+```{r}
+df = df %>% filter(trial != "practice")
+```
+
+
+### Exclusions
+
+Let's play with some possible exclusion criteria. When exploring exclusion criteria, I apply it here, and then I render the rest of the document to see the consequences.
+
+What I've decided on provisionally is excluding people who miss either the trial where causal support is the largest or the trial where causal support is smallest. We will create attention check trials specifically for these exclusions when we run our experiment (so we don't condition inclusion on the outcome we are modeling).
+
+```{r}
+exclude_df <- df %>%
+  group_by(workerId) %>%
+  summarise(
+    max_trial_idx = which(causal_support == max(causal_support)),
+    max_trial_gt = ground_truth[[max_trial_idx]],
+    max_trial_err = abs_err[[max_trial_idx]],
+    min_trial_idx = which(causal_support == min(causal_support)),
+    min_trial_gt = ground_truth[[min_trial_idx]],
+    min_trial_err = abs_err[[min_trial_idx]],
+    exclude = max_trial_err > 0.5 | min_trial_err > 0.5
+  )
+
+head(exclude_df)
+```
+
+<!-- Apply the exclusion criteria. -->
+
+<!-- ```{r} -->
+<!-- df = exclude_df %>% -->
+<!--   select(workerId, exclude) %>% -->
+<!--   full_join(df, by = "workerId") %>% -->
+<!--   filter(!exclude) %>% -->
+<!--   select(-exclude) -->
+<!-- ``` -->
+
+
+### Performance
+
+Let's start by looking at the over pattern of absolute error. Then we'll look at the pattern of responses vs ground truth.
+
+#### Absolute error
+
+Here's the absolute error per trial, separated by sample size and visualization condition.
+
+```{r}
+df %>% 
+  ggplot(aes(x = condition, y = abs_err)) +
+    stat_eye() +
+    geom_point(position = position_jitter(), alpha = 0.5) +
+    theme_bw() +
+    facet_grid(n ~ .)
+```
+
+Let's also look at the average absolute error per worker and level of sample size, separated by visualization condition.
+
+```{r}
+df %>% 
+  group_by(workerId, condition, n) %>%
+  summarise(
+    avg_abs_err = mean(abs_err)
+  ) %>%
+  ungroup() %>%
+  ggplot(aes(x = condition, y = avg_abs_err)) +
+    stat_eye() +
+    geom_point(position = position_jitter(), alpha = 0.5) +
+    theme_bw() +
+    facet_grid(n ~ .)
+```
+
+What we see in these plots is subtle but interesting. The absolute error in the icons condition seems to increase with sample size such that error is lower on average in the icons condition than in the text condition at low sample size, but this reverses at very large sample size. This is consistent with perceptual distortions in number sense being different with different visualization formats.
+
+Perhaps more striking, absolute error is very high. I have some concern that people don't understand the response scale.
+
+#### Responses vs ground truth
+
+Let's see if we can make better sense of the results by looking at raw responses vs the ground truth. The red line represents perfect performance.
+
+```{r}
+df %>% 
+  ggplot(aes(x = ground_truth, y = response_A)) +
+    geom_point() +
+    geom_abline(slope = 100, intercept = 0, color = "red") +
+    theme_bw() +
+    facet_grid(n ~ condition)
+```
+
+We expect to see an inverse S-shaped pattern here (i.e., a linear in log odds pattern with a slope less than one, at least above `ground_truth = 0.5`). To some extent, this is what we see here, but the responses are very noisy. As expected there is some asymmetry above and below `ground_truth = 0.5`. This makes sense given that judging the absence of evidence (i.e., ground truth closer to 0) relies on a more ambiguous visual cue than judging that the treatment is effective (i.e., ground truth closer to 1). 
+
+We expect a linear model to fit these data well in log odds units, so lets sanity check this intuition by looking at causal support (i.e., `logit(ground_truth))` vs the log ratio of responses.
+
+```{r}
+df = df %>% 
+  mutate(
+    # adjust response units
+    response_A = if_else(
+      response_A > 99.5, 99.5,
+      if_else(
+        response_A < 0.5, 0.5,
+        as.numeric(response_A))),
+    response_B = if_else(
+      response_B > 99.5, 99.5,
+      if_else(
+        response_B < 0.5, 0.5,
+        as.numeric(response_B))),
+    # calculate log response ratio
+    lrr = log(response_A / 100) - log(response_B / 100)
+  )
+```
+
+```{r}
+df %>%
+  ggplot(aes(x = causal_support, y = lrr)) +
+    geom_point() +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    coord_cartesian(
+      xlim = c(-20, 35),
+      ylim = c(-20, 35)
+    ) +
+    theme_bw() +
+    facet_grid(n ~ condition)
+```
+
+
+This doesn't look as informative as I'd like because the sampling of the ground truth is so heavily influenced by sample size. Let's look at each level of sample size on it's own axis scale.
+
+```{r}
+df %>% 
+  filter(n == 100) %>%
+  ggplot(aes(x = causal_support, y = lrr)) +
+    geom_point() +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    coord_cartesian(
+      xlim = c(-4, 4),
+      ylim = c(-4, 4)
+    ) +
+    theme_bw() +
+    facet_grid(n ~ condition)
+```
+
+```{r}
+df %>% 
+  filter(n == 500) %>%
+  ggplot(aes(x = causal_support, y = lrr)) +
+    geom_point() +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    coord_cartesian(
+      xlim = c(-6, 6),
+      ylim = c(-6, 6)
+    ) +
+    theme_bw() +
+    facet_grid(n ~ condition)
+```
+
+```{r}
+df %>% 
+  filter(n == 1000) %>%
+  ggplot(aes(x = causal_support, y = lrr)) +
+    geom_point() +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    coord_cartesian(
+      xlim = c(-11, 11),
+      ylim = c(-11, 11)
+    ) +
+    theme_bw() +
+    facet_grid(n ~ condition)
+```
+
+```{r}
+df %>% 
+  filter(n == 5000) %>%
+  ggplot(aes(x = causal_support, y = lrr)) +
+    geom_point() +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    coord_cartesian(
+      xlim = c(-35, 35),
+      ylim = c(-35, 35)
+    ) +
+    theme_bw() +
+    facet_grid(n ~ condition)
+```
+
+It seems clear that slopes will be less than 1 in logit-logit coordinate space and that slopes are different on either side of `causal_support = 0`. This means that to fit these responses on this scale we're going to want a piecewise function, similar to models of utility that treat the perception of gains and losses differently. 
+
+One thing that stands out on these charts is that **the ability to discriminate signal decreases at higher sample size**. Although we expect to see people underestimate sample size, the logit-logit slope flattening out as the weight of evidence increases is an interesting pattern.
+
+Also, notice that at small sample sizes the slope is much steeper below `causal_support = 0` than above. This suggests that our piecewise slopes should interact with sample size, probably with a random effects component to account for the way that this varies from person to person.
+
+The level of response noise is concerning to me. For example, when `n = 100` and `condition = 'text'` there are many log response ratios on the wrong side of 0 (i.e., responses on the wrong side of 50%). We might want to use some sort of a attention check to exclude participants who didn't get the task or were responding randomly.
+
+
+### Response times
+
+Let's see a histogram of response times per trial. These are measured in seconds. 
+
+```{r}
+df %>%
+  ggplot(aes(x = trial_dur)) +
+   geom_histogram() +
+    theme_bw()
+```
+
+As expected, this looks like a power law distribution.
+
+Let's separate this by condition to see if icons or text is taking systematically longer.
+
+```{r}
+df %>%
+  ggplot(aes(x = trial_dur)) +
+    geom_histogram() +
+    theme_bw() +
+    facet_grid(condition ~ .)
+```
+
+These distributions look similar. Maybe icons take slightly less time on the median trial.
+
+What about the duration of the experiment per participant?
+
+```{r}
+df %>%
+  filter(trial == 1) %>%
+  ggplot(aes(x = duration)) +
+    geom_histogram() +
+    theme_bw() +
+    facet_grid(condition ~ .)
+```
+
+Again these, look pretty similar. Honestly the response time data is not too interesting, but it's worth checking.
+
+
+### Demographics
+
+Let's check out out demographic variables in aggregate just to get a sense of our sample composition.
+
+We did a free response for gender, so we'll need to do a little lightweight text processing to generate a histogram. A few participants seem to have put their age in the gender box, so we are missing data for these folks. This categorization is not intended to be normative/prescriptive; this is just for the purpose of generating an approximate overview of gender balance in our sample.
+
+```{r}
+df %>%
+  filter(trial == 1) %>%
+  rowwise() %>%
+  mutate(
+    gender = tolower(as.character(gender)),
+    gender = case_when(
+      grepl("woman", gender, fixed = TRUE) | grepl("female", gender, fixed = TRUE)       ~ "woman",
+      (grepl("man", gender, fixed = TRUE) | grepl("male", gender, fixed = TRUE)) & 
+        ! (grepl("woman", gender, fixed = TRUE) | grepl("female", gender, fixed = TRUE)) ~ "man",
+      TRUE                                                                               ~ "other")
+  ) %>%
+  ggplot(aes(y = gender)) +
+    geom_bar() + 
+    theme_bw()
+```
+
+Let's also check out age...
+
+```{r}
+df %>%
+  filter(trial == 1) %>%
+  ggplot(aes(y = age)) +
+    geom_bar() + 
+    theme_bw()
+```
+
+... and education.
+
+```{r}
+df %>%
+  filter(trial == 1) %>%
+  ggplot(aes(y = education)) +
+    geom_bar() + 
+    theme_bw()
+```
+
+Last, let's look at chart use.
+
+```{r}
+df %>%
+  filter(trial == 1) %>%
+  ggplot(aes(y = chart_use)) +
+    geom_bar() + 
+    theme_bw()
+```
+
+#### Covariate effects on performance
+
+Education and chart use are the only demographic variables that we collected which I would expect to have an impact on performance.
+
+Let's check out the relationships of those variables with avg absolute error. (These charts no longer work after exclusions because, we don't have enough data.)
+
+```{r}
+df %>% 
+  group_by(workerId, education) %>%
+  summarise(
+    avg_abs_err = mean(abs_err)
+  ) %>%
+  ungroup() %>%
+  ggplot(aes(x = avg_abs_err, y = education)) +
+    stat_eyeh() +
+    geom_point(position = position_jitter(), alpha = 0.5) +
+    theme_bw()
+```
+
+```{r}
+df %>% 
+  group_by(workerId, chart_use) %>%
+  summarise(
+    avg_abs_err = mean(abs_err)
+  ) %>%
+  ungroup() %>%
+  ggplot(aes(x = avg_abs_err, y = chart_use)) +
+    stat_eye() +
+    geom_point(position = position_jitter(), alpha = 0.5) +
+    theme_bw()
+```
+

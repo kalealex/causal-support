@@ -1,5 +1,5 @@
 ---
-title: "Causal Support: Stimuli and Task Structure"
+title: "Causal Support: Pilot Stimuli and Task Structure"
 author: "Alex Kale"
 date: "`r Sys.Date()`"
 output: html_document
@@ -438,7 +438,7 @@ likelihood_from_monte_carlo_confounding <- function (A, nA, B, nB, C, nC, D, nD,
   }
   
   
-  # calculate counts for each possible outcome in the contingengy table
+  # calculate counts for each possible outcome in the contingency table
   counts <- cbind(
     A,
     nA - A,

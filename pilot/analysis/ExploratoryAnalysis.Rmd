@@ -45,7 +45,7 @@ exclude_df <- df %>%
     min_trial_idx = which(causal_support == min(causal_support)),
     min_trial_gt = ground_truth[[min_trial_idx]],
     min_trial_resp = response_A[[min_trial_idx]],
-    exclude = max_trial_resp < 50 | min_trial_resp > 75
+    exclude = max_trial_resp < 50 | min_trial_resp > 50
   )
 
 head(exclude_df)

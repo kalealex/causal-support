@@ -1,0 +1,324 @@
+---
+title: "Causal Support: E2 Stimuli and Task Structure"
+author: "Alex Kale"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggdist)
+library(RColorBrewer)
+set.seed(1234)
+```
+
+## Overview: Causal support as benchmark for causal induction
+
+The core idea of this study is to see what we can learn by using *causal support*, as defined by [Griffiths and Tenenbaum](https://web.mit.edu/cocosci/Papers/structure-strength-reprint.pdf), as a normative benchmark for causal induction tasks with visualizations, where chart users attempt to reason about the causal structure underlying data.
+
+Following Griffiths and Tenenbaum, we will present participants with scenarios involving two alternative causal explanations for data, represented by directed acyclic graphs (DAGs), and we will ask them to say the probability that one of those graphs vs the other generated a given data set. We will evaluate these elicited probabilities by comparing them to *causal support*, which is the log likelihood ratio of the data given the two alternative models. While this can be extended to use cases with more than two models, we will focus on toy problems for causal induction to learn what we can as a proof of concept for causal support as an evaluation strategy for causal reasoning with visualizations.
+
+In this document, we plan the data and alternative models we will show participants. Our aim is to plan a trial structure and the copy for a crowdsourced experiment. Adapting tasks from Griffiths and Tenenbaum, as well as Wu, we will ask participants to look at two-way tables showing counts of people with and without disease, given the presence or absence of a gene and the presence or absence of treatment. On each trial we, will show a fake data set and ask for a probability judgment.
+
+
+## Task Scenario: Does the gene both cause the disease and block the treatment effect?
+
+The copy for this problem will be: 
+*"A company has hired you to help them analyze 18 data sets that they’ve collected about the impact of different genes on different treatments and diseases. The company knows that a particular treatment protects against each disease in about 70% of people who receive treatment. The company wants your help figuring out whether various genes are interfering with their treatments and if these genes also cause the diseases that treatments protect against."*
+
+Before we get into generating fake data, we need a way of evaluating the ground truth probability of confounding. 
+
+### Monte Carlo simulations
+
+To operationalize a normative judgment on this task, we set up a Monte Carlo simulation for each alternative DAG or hypothesis about causal structure. We represent each DAG as a parameterized simulation where we calculate the log likelihood of the data by integrating over a uniform prior on parameter values. Note that unlike Griffiths and Tenenbaum, we are assuming that there is a base rate of the effect (disease) that is not explained by the covariate (gene).
+
+```{r}
+# expects data as counts from a two-way table formatted as follows:
+#   count_nGnT  - count with disease given gene F and treatment F
+#   total_nGnT  - total given gene F and treatment F
+#   count_nGT   - count with disease given gene F and treatment T
+#   total_nGT   - total given gene F and treatment T
+#   count_GnT   - count with disease given gene T and treatment F
+#   total_GnT   - total given gene T and treatment F
+#   count_GT    - count with disease given gene T and treatment T
+#   total_GT    - total given gene T and treatment T
+# the booleans gene_impacts_d and gene_impacts_t determine which DAG is simulated
+likelihood_from_monte_carlo <- function (count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, gene_impacts_d = TRUE, gene_impacts_t = TRUE) {
+  # define parameters (sample from uniform distribution)
+  m <- 10000              # number of simulations
+  p_disease <- runif(m)   # base rate of disease due to unknown causes
+  p_treat <- runif(m)     # probability that treatment prevents disease
+  if (gene_impacts_d) {
+    p_gene_d <- runif(m)  # probability that gene causes disease
+  } else {
+    p_gene_d <- rep(0, m) # gene has no effect on disease
+  }
+  if (gene_impacts_t) {
+    p_gene_t <- runif(m)  # probability that gene prevents treatment from working
+  } else {
+    p_gene_t <- rep(0, m)  # gene has no effect on treatment
+  }
+  
+  
+  # calculate counts for each possible outcome in the contingency table
+  counts <- cbind(
+    count_nGnT,
+    total_nGnT - count_nGnT,
+    count_nGT,
+    total_nGT - count_nGT,
+    count_GnT,
+    total_GnT - count_GnT,
+    count_GT,
+    total_GT - count_GT
+  )
+  
+  # calculate probabilies for each possible outcome in the contingency table
+  probs <- cbind(
+    p_disease,                                                                      # p(disease|gene F, treatment F)
+    (1 - p_disease),                                                                # p(~disease|gene F, treatment F)
+    p_disease*(1 - p_treat),                                                        # p(disease|gene F, treatment T)
+    (1 - p_disease) + p_disease*p_treat,                                            # p(~disease|gene F, treatment T)
+    p_gene_d + p_disease - p_gene_d*p_disease,                                      # p(disease|gene T, treatment F)
+    (1 - p_gene_d)*(1 - p_disease),                                                 # p(~disease|gene T, treatment F)
+    # delta from E1:
+    (p_gene_d + p_disease - p_gene_d*p_disease)*((1 - p_treat) + p_treat*p_gene_t), # p(disease|gene T, treatment T)
+    (1 - p_gene_d)*(1 - p_disease) + (p_gene_d + p_disease - p_gene_d*p_disease)*(p_treat*(1 - p_gene_t)) # p(~disease|gene T, treatment T)
+  )
+  
+  # calculate log likelihood of data for each of m runs of the simulation
+  loglik <- rowSums(matrix(rep(counts, m), nrow = m, ncol = 8, byrow = TRUE) * log(probs))
+  # normalize by maximum likelihood to make probabilities comparable across Monte Carlo simulations
+  # and marginalize over simulated parameter values
+  logmax <- max(loglik)
+  logscore <- logmax + log(sum(exp(loglik - logmax))) - log(m)
+}
+```
+
+Now we can generate fake data sets and calculate how much causal support there is for confounding. This enables to establish a normative benchmark for responses.
+
+
+### Trial structure
+
+Lets generate a bunch of stimuli based on a set of parameters. We'll add sampling error by drawing events from a binomial distribution, except in the case of the base rate of treatment because we will always present a balanced sample.
+
+```{r}
+# number of simulated data sets per combination of factors
+n_sims <- 2000
+
+# set up manipulations and simulate fake data
+stim2_df <- expand.grid(
+    p_gene_d = c(0, 0.2, 0.5), # gene effect on disease (2 levels)
+    p_gene_t = c(0, 0.5),      # gene effect on disease (2 levels)
+    br_gene = 0.4,             # base rate of gene (control)
+    p_treat = 0.8,             # treatment effect (control)
+    br_treat = 0.5,            # base rate of treatment (control, no noise)
+    p_disease = 0.2,           # base rate of disease (control)
+    N = c(500, 1000)     # sample size (2 levels)
+  ) %>%
+  rowid_to_column("trialIdx") %>%
+  rowwise() %>%
+  mutate(
+    # get a balanced sample of people do and do not receive treatment
+    nTreat = round(N*br_treat),  
+    nNoTreat = round(N*(1 - br_treat)),
+    # sample possible numbers of people in each group who have the gene
+    draw = list(seq(from = 1, to = n_sims, by = 1)),
+    total_GnT = list(rbinom(n_sims, nNoTreat, br_gene)), # N(gene T, treatment F)
+    total_GT = list(rbinom(n_sims, nTreat, br_gene))     # N(gene T, treatment T)
+  ) %>%
+  unnest(cols = c("draw", "total_GT", "total_GnT")) %>%
+  mutate(
+    # calculate number of people in each group who DO NOT have the gene for each draw
+    total_nGnT = nNoTreat - total_GnT, # N(gene F, treatment F)
+    total_nGT = nTreat - total_GT      # N(gene F, treatment T)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    count_nGnT = rbinom(1, total_nGnT, p_disease),                                            # N(disease|gene F, treatment F)
+    count_nGT = rbinom(1, total_nGT, p_disease*(1 - p_treat)),                                # N(disease|gene F, treatment T)
+    count_GnT = rbinom(1, total_GnT, (p_gene_d + p_disease - p_gene_d*p_disease)),            # N(disease|gene T, treatment F)
+    # delta from E1
+    count_GT = rbinom(1, total_GT, (p_gene_d + p_disease - p_gene_d*p_disease)*((1 - p_treat) + p_treat*p_gene_t)) # N(disease|gene T, treatment T)
+  ) %>%
+  # drop intermediate calculations
+  select(-one_of(c("nTreat", "nNoTreat")))
+
+head(stim2_df)
+```
+
+Now, let's calculate causal support for each simulated data set.
+
+```{r}
+stim2_df = stim2_df %>%
+  rowwise() %>%
+  mutate(
+    # calculate log likelihood ratio of data under confounding model vs *disjunction* of all others, preventing values of inf
+    llA = likelihood_from_monte_carlo(count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, FALSE, FALSE),
+    llB = likelihood_from_monte_carlo(count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, TRUE, FALSE),
+    llC = likelihood_from_monte_carlo(count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, FALSE, TRUE),
+    llD = likelihood_from_monte_carlo(count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, TRUE, TRUE),
+    llmaxABC = max(llA, llB, llC),
+    llABC = llmaxABC + log(exp(llA - llmaxABC) + exp(llB - llmaxABC) + exp(llC - llmaxABC)), # trick to avoid exp() => 0 for small ll
+    llr = llD - llABC, 
+    # calculate log ratio of priors, assuming a uniform prior across 4 DAGs
+    lpr = log(0.25) - log(0.25 + 0.25 + 0.25),
+    # calculate causal support as Bayesian update
+    causal_support = llr + lpr,
+    # convert causal support into normative probability judgment
+    ground_truth = plogis(causal_support)
+  ) %>%
+  # drop the columns for intermediate calculations
+  select(-one_of(c("llA", "llB", "llC", "llD", "llmaxABC", "llABC")))
+```
+
+While we want our stimuli to reflect natural sampling error, we also want to counterbalance that sampling error within each data condition across participants. In order to do this, we'll reduce our stimulus data from a distribution of draws to a set of quantiles of ground truth causal support that we can sample systematically.
+
+```{r}
+# generate a list of probabilities corresponding to a number of quantiles equal to the number of unique data conditions
+n_quantiles <- max(stim2_df$trialIdx)
+p <- ppoints(n_quantiles)
+
+# generate a dataframe containing quantiles for each data condition
+quantiles2_df <- stim2_df %>%
+  group_by(trialIdx) %>%
+  summarise(
+    qIdx = list(seq(from = 1, to = n_quantiles, by = 1)),
+    q = list(quantile(causal_support, p))
+  )
+
+# filter draws of possible stimuli to include only our quantiles
+stim2_df_filtered <- stim2_df %>%
+  # first we need to group our stimuli dataframe the same way as our quantile dataframe without loosing any columns
+  group_by(trialIdx, p_gene_d, p_gene_t, br_gene, p_treat, br_treat, p_disease, N) %>%
+  summarise(
+    draw = list(draw),
+    total_nGnT = list(total_nGnT),
+    total_nGT = list(total_nGT),
+    total_GnT = list(total_GnT),
+    total_GT = list(total_GT),
+    count_nGnT = list(count_nGnT),
+    count_nGT = list(count_nGT),
+    count_GnT = list(count_GnT),
+    count_GT = list(count_GT),
+    llr = list(llr),
+    lpr = list(lpr),
+    causal_support = list(causal_support),
+    ground_truth = list(ground_truth)
+  ) %>%
+  # join stimuli data with quantiles, and make rows represent data conditions x quantiles
+  full_join(quantiles2_df, by = c("trialIdx")) %>%
+  unnest(cols = c("qIdx","q")) %>%
+  # find the draws that are closest to our quantiles for each data condition
+  rowwise() %>%
+  mutate(
+    draws_diff_from_q = list(lapply(causal_support, function(x) abs(x - q) )),
+    which_draw = which.min(unlist(draws_diff_from_q)),
+    draw = draw[[which_draw]],
+    total_nGnT = total_nGnT[[which_draw]],
+    total_nGT = total_nGT[[which_draw]],
+    total_GnT = total_GnT[[which_draw]],
+    total_GT = total_GT[[which_draw]],
+    count_nGnT = count_nGnT[[which_draw]],
+    count_nGT = count_nGT[[which_draw]],
+    count_GnT = count_GnT[[which_draw]],
+    count_GT = count_GT[[which_draw]],
+    llr = llr[[which_draw]],
+    lpr = lpr[[which_draw]],
+    causal_support = causal_support[[which_draw]],
+    ground_truth = ground_truth[[which_draw]]
+  ) %>%
+  # drop the columns we no longer need at this point
+  select(-one_of(c("draw", "which_draw", "q", "draws_diff_from_q"))) 
+```
+
+Let's also grab a couple draws to use for attention check and practice trials.
+
+```{r}
+# get min and max causal support values 
+max_cs <- max(stim2_df$causal_support)
+min_cs <- min(stim2_df$causal_support)
+
+# get data frame of catch trials
+catch_df <- stim2_df %>%
+  filter(causal_support == max_cs || causal_support == min_cs) %>%
+  mutate(
+    trialIdx = case_when(
+      causal_support == max_cs ~ -1, # practice
+      causal_support == min_cs ~ -2, # catch
+      TRUE                     ~ as.numeric(trialIdx)),
+    qIdx = case_when(
+      causal_support == max_cs ~ -1, # practice
+      causal_support == min_cs ~ -2, # catch
+      TRUE                     ~ as.numeric(trialIdx))
+  ) %>%
+  select(-draw)
+
+# join with filtered dataframe
+stim2_df <- bind_rows(stim2_df_filtered, catch_df)
+```
+
+Now, let's visualize the ground truth probability of confounding, which is derived from causal support, as a function of our manipulations to see how difficult our task setup is.
+
+```{r}
+stim2_df %>% 
+  unite("gene_effects", p_gene_d:p_gene_t, remove = FALSE) %>%
+  ggplot(aes(x = gene_effects, y = ground_truth)) +
+  # stat_lineribbon(.width = c(0.95, 0.8, 0.5), color = "black") +
+  # scale_fill_brewer() +
+  stat_dots(position = "dodge", binwidth = 0.04, quantiles = n_quantiles) +
+  theme_bw() +
+  facet_grid(N ~ .)
+```
+
+We can see that we are sampling a nice range of the ground truth with this trial structure. 
+
+Let's check that a quarter of these data conditions fall above causal support of 0, ground truth of 0.5 chance of confounding. *Finding combinations of data generating parameters that meet this criterion was a matter of trial and error.*
+
+```{r}
+sum(stim2_df$causal_support > 0) / length(stim2_df$causal_support)
+```
+
+```{r}
+# stim2_df <- read_csv("/Users/kalea/Code/Projects/Temp/causal-support-experiment-interface/app/main/stimdata1.csv")
+
+# set maxCount for non-interactive bars with scales fixed
+stim2_df %>% 
+  mutate(
+    maxCount = max(count_nGnT, (total_nGnT - count_nGnT), count_nGT, (total_nGT - count_nGT), count_GnT, (total_GnT - count_GnT), count_GT, (total_GT - count_GT))
+  ) %>%
+  select(maxCount) %>%
+  max()
+
+# set maxCount for interactive bars with scales fixed
+stim2_df %>% 
+  mutate(
+    maxCount = max(count_nGnT + count_nGT + count_GnT + count_GT, (total_nGnT - count_nGnT) + (total_nGT - count_nGT) + (total_GnT - count_GnT) +  (total_GT - count_GT))
+  ) %>%
+  select(maxCount) %>%
+  max()
+
+# set maxCount for crossfilter bars with scales fixed
+stim2_df %>% 
+  mutate(
+    maxCount = max(
+      total_nGnT + total_nGT, 
+      total_GnT + total_GT,
+      total_nGnT + total_GnT, 
+      total_nGT + total_GT,
+      count_nGnT + count_nGT + count_GnT + count_GT,
+      (total_nGnT - count_nGnT) + (total_nGT - count_nGT) + (total_GnT - count_GnT) +  (total_GT - count_GT))
+  ) %>%
+  select(maxCount) %>%
+  max()
+```
+
+We save this data to generate stimuli during the experiment.
+
+```{r}
+# save data as json
+# write.csv(stim2_df, "stimuli/stimdata2.csv", quote = FALSE)
+```
