@@ -1,5 +1,5 @@
 ---
-title: "Exploratory Analysis"
+title: "E1 False Start: Exploratory Analysis"
 author: "Alex Kale"
 date: "`r Sys.Date()`"
 output: html_document
@@ -18,10 +18,11 @@ library(ggdist)
 Load data.
 
 ```{r}
-df <- read_csv("pilot-anonymous.csv")
+df <- read_csv("e1-anonymous.csv")
 
 head(df)
 ```
+
 Drop practice trial.
 
 ```{r}
@@ -31,24 +32,32 @@ df = df %>% filter(trial != "practice")
 
 ### Exclusions
 
-Let's play with some possible exclusion criteria. When exploring exclusion criteria, I apply it here, and then I render the rest of the document to see the consequences.
-
-What I've decided on provisionally is excluding people who miss either the trial where causal support is the largest or the trial where causal support is smallest. We will create attention check trials specifically for these exclusions when we run our experiment (so we don't condition inclusion on the outcome we are modeling).
+Let's exclude workers who miss either the trial where causal support is the largest or the trial where causal support is smallest. We define miss as absolute error greater than 50%.
 
 ```{r}
 exclude_df <- df %>%
   group_by(workerId) %>%
   summarise(
-    max_trial_idx = which(causal_support == max(causal_support)),
+    max_trial_idx = which(trial_idx == -1)[1],
     max_trial_gt = ground_truth[[max_trial_idx]],
     max_trial_err = abs_err[[max_trial_idx]],
-    min_trial_idx = which(causal_support == min(causal_support)),
+    min_trial_idx = which(trial_idx == -2)[1],
     min_trial_gt = ground_truth[[min_trial_idx]],
     min_trial_err = abs_err[[min_trial_idx]],
-    exclude = max_trial_err > 0.5 | min_trial_err > 0.5
+    max_exclude = max_trial_err > 0.5,
+    min_exclude = min_trial_err > 0.5,
+    exclude = max_trial_err > 0.5 | min_trial_err > 0.5,
   )
+  
 
 head(exclude_df)
+```
+What proportion of workers are missing each attention check? How many workers are we leaving out with our exclusion criteria?
+
+```{r}
+sum(exclude_df$max_exclude) / length(exclude_df$exclude)
+sum(exclude_df$min_exclude) / length(exclude_df$exclude)
+sum(exclude_df$exclude) / length(exclude_df$exclude)
 ```
 
 <!-- Apply the exclusion criteria. -->
@@ -60,6 +69,8 @@ head(exclude_df)
 <!--   filter(!exclude) %>% -->
 <!--   select(-exclude) -->
 <!-- ``` -->
+
+We'll proceed without apply our exclusion criteria for now.
 
 
 ### Performance
@@ -95,9 +106,9 @@ df %>%
     facet_grid(n ~ .)
 ```
 
-What we see in these plots is subtle but interesting. The absolute error in the icons condition seems to increase with sample size such that error is lower on average in the icons condition than in the text condition at low sample size, but this reverses at very large sample size. This is consistent with perceptual distortions in number sense being different with different visualization formats.
+Absolute error seems to get higher as sample size increases consistent with our pilot. Absolute error seems highest with filtbars and test, unsurprisingly. It looks like aggbars and icons may be especially helpful at high sample size.
 
-Perhaps more striking, absolute error is very high. I have some concern that people don't understand the response scale.
+Perhaps more striking, absolute error is very high.
 
 #### Responses vs ground truth
 
@@ -112,7 +123,7 @@ df %>%
     facet_grid(n ~ condition)
 ```
 
-We expect to see an inverse S-shaped pattern here (i.e., a linear in log odds pattern with a slope less than one, at least above `ground_truth = 0.5`). To some extent, this is what we see here, but the responses are very noisy. As expected there is some asymmetry above and below `ground_truth = 0.5`. This makes sense given that judging the absence of evidence (i.e., ground truth closer to 0) relies on a more ambiguous visual cue than judging that the treatment is effective (i.e., ground truth closer to 1). 
+We expect to see an inverse S-shaped pattern here (i.e., a linear in log odds pattern with a slope less than one, at least above `ground_truth = 0.5`). To some extent, this is what we see here, but the responses are very noisy. 
 
 We expect a linear model to fit these data well in log odds units, so lets sanity check this intuition by looking at causal support (i.e., `logit(ground_truth))` vs the log ratio of responses.
 
@@ -158,8 +169,8 @@ df %>%
     geom_point() +
     geom_abline(slope = 1, intercept = 0, color = "red") +
     coord_cartesian(
-      xlim = c(-4, 4),
-      ylim = c(-4, 4)
+      xlim = c(-10, 10),
+      ylim = c(-10, 10)
     ) +
     theme_bw() +
     facet_grid(n ~ condition)
@@ -172,8 +183,8 @@ df %>%
     geom_point() +
     geom_abline(slope = 1, intercept = 0, color = "red") +
     coord_cartesian(
-      xlim = c(-6, 6),
-      ylim = c(-6, 6)
+      xlim = c(-20, 20),
+      ylim = c(-20, 20)
     ) +
     theme_bw() +
     facet_grid(n ~ condition)
@@ -186,8 +197,8 @@ df %>%
     geom_point() +
     geom_abline(slope = 1, intercept = 0, color = "red") +
     coord_cartesian(
-      xlim = c(-11, 11),
-      ylim = c(-11, 11)
+      xlim = c(-30, 30),
+      ylim = c(-30, 30)
     ) +
     theme_bw() +
     facet_grid(n ~ condition)
@@ -195,25 +206,23 @@ df %>%
 
 ```{r}
 df %>% 
-  filter(n == 5000) %>%
+  filter(n == 1500) %>%
   ggplot(aes(x = causal_support, y = lrr)) +
     geom_point() +
     geom_abline(slope = 1, intercept = 0, color = "red") +
     coord_cartesian(
-      xlim = c(-35, 35),
-      ylim = c(-35, 35)
+      xlim = c(-40, 40),
+      ylim = c(-40, 40)
     ) +
     theme_bw() +
     facet_grid(n ~ condition)
 ```
 
-It seems clear that slopes will be less than 1 in logit-logit coordinate space and that slopes are different on either side of `causal_support = 0`. This means that to fit these responses on this scale we're going to want a piecewise function, similar to models of utility that treat the perception of gains and losses differently. 
+It seems clear that slopes will be less than 1 in logit-logit coordinate space, at least for all but the smallest sample size, and that slopes are different on either side of `causal_support = 0`. We'll want to make sure our model can account for this pattern.
 
 One thing that stands out on these charts is that **the ability to discriminate signal decreases at higher sample size**. Although we expect to see people underestimate sample size, the logit-logit slope flattening out as the weight of evidence increases is an interesting pattern.
 
-Also, notice that at small sample sizes the slope is much steeper below `causal_support = 0` than above. This suggests that our piecewise slopes should interact with sample size, probably with a random effects component to account for the way that this varies from person to person.
-
-The level of response noise is concerning to me. For example, when `n = 100` and `condition = 'text'` there are many log response ratios on the wrong side of 0 (i.e., responses on the wrong side of 50%). We might want to use some sort of a attention check to exclude participants who didn't get the task or were responding randomly.
+The level of response noise is concerning to me, but it does seem better than in the pilot. For example, relatively few log response ratios on the wrong side of 0 (i.e., responses on the wrong side of 50%). This means that much of the time people are correctly judging the direction of effect
 
 
 ### Response times
@@ -222,6 +231,7 @@ Let's see a histogram of response times per trial. These are measured in seconds
 
 ```{r}
 df %>%
+  filter(trial_dur >= 0) %>%
   ggplot(aes(x = trial_dur)) +
    geom_histogram() +
     theme_bw()
@@ -233,18 +243,20 @@ Let's separate this by condition to see if icons or text is taking systematicall
 
 ```{r}
 df %>%
+  filter(trial_dur >= 0) %>%
   ggplot(aes(x = trial_dur)) +
     geom_histogram() +
     theme_bw() +
     facet_grid(condition ~ .)
 ```
 
-These distributions look similar. Maybe icons take slightly less time on the median trial.
+These distributions look similar. Maybe bars take slightly less time than other conditions.
 
 What about the duration of the experiment per participant?
 
 ```{r}
 df %>%
+  filter(duration >= 0) %>%
   filter(trial == 1) %>%
   ggplot(aes(x = duration)) +
     geom_histogram() +
@@ -252,7 +264,7 @@ df %>%
     facet_grid(condition ~ .)
 ```
 
-Again these, look pretty similar. Honestly the response time data is not too interesting, but it's worth checking.
+Again these, look pretty similar. There's a subgroup of people who seem to take longer with aggbars. Honestly the response time data is not too interesting, but it's worth checking.
 
 
 ### Demographics
@@ -316,13 +328,22 @@ Let's check out the relationships of those variables with avg absolute error. (T
 
 ```{r}
 df %>% 
+  group_by(education) %>%
+  summarise(
+    count = length(unique(workerId)),
+    workerId = list(workerId),
+    abs_err = list(abs_err)
+  ) %>%
+  unnest(cols = c("workerId", "abs_err")) %>%
   group_by(workerId, education) %>%
   summarise(
-    avg_abs_err = mean(abs_err)
+    avg_abs_err = mean(abs_err),
+    count = unique(count)
   ) %>%
   ungroup() %>%
+  filter(count > 2) %>%
   ggplot(aes(x = avg_abs_err, y = education)) +
-    stat_eyeh() +
+    stat_eye() +
     geom_point(position = position_jitter(), alpha = 0.5) +
     theme_bw()
 ```

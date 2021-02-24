@@ -8,11 +8,11 @@ anonymize <- function(x, algo="crc32"){
 }
 
 # load raw data
-raw_df <- read_csv("raw-data/pilot.csv")
+raw_df <- read_csv("raw-data/e1.csv")
 
 # anonymize worker ids
 anonymous_df <- raw_df %>%
   mutate(workerId=anonymize(workerId))
 
 # save file
-write.csv(anonymous_df, file = "pilot-anonymous.csv", row.names=FALSE)
+write.csv(anonymous_df, file = "e1-anonymous.csv", row.names=FALSE)
