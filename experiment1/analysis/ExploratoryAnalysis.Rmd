@@ -23,10 +23,10 @@ df <- read_csv("e1-anonymous.csv")
 head(df)
 ```
 
-Drop practice trial.
+Drop practice trial, bad batches of filtbars data, and one participant who is missing an attention check trial for some reason.
 
 ```{r}
-df = df %>% filter(trial != "practice")
+df = df %>% filter(trial != "practice") %>% filter(condition != "filtbars" | batch > 61) %>% filter(!workerId %in% c("00163888"))
 ```
 
 
@@ -115,9 +115,9 @@ df %>%
     facet_grid(n ~ .)
 ```
 
-Absolute error seems to get higher as sample size increases consistent with our pilot. Absolute error seems highest with filtbars, unsurprisingly. It looks like icons may be especially helpful relative to other conditions at high sample size.
+Absolute error seems to get higher as sample size increases consistent with our pilot. It's pretty difficult to see systematic differences in absolute error, though we will get better evidence from modeling.
 
-Perhaps more striking, absolute error is very high. This is probably a realistic reflection of the task difficulty for causal inferences.
+Overall, absolute error is very high. This is probably a realistic reflection of the task difficulty for causal inferences.
 
 #### Responses vs ground truth
 
@@ -257,13 +257,13 @@ df %>%
     facet_grid(condition ~ .)
 ```
 
-These distributions look similar. People seem to work most quickly in the text and icons conditions and slower with the bar chart variants.
+These distributions look similar. People seem to work most quickly in the bars and icons conditions and slower with the interactive conditions.
 
-What about the duration of the experiment per participant?
+What about the duration of the experiment per participant? We filter to durations within an hour because Mechanical Turk workers tend to leave browser windows open. This is a very noisy measure.
 
 ```{r}
 df %>%
-  filter(duration >= 0) %>%
+  filter(duration >= 0 & duration <= 60*60) %>%
   filter(trial == 1) %>%
   ggplot(aes(x = duration)) +
     geom_histogram() +
@@ -271,7 +271,9 @@ df %>%
     facet_grid(condition ~ .)
 ```
 
-Outliers make it hard to see anything in this data. Honestly the response time data is not too interesting, but it's worth checking.
+Durations seem mostly similar with more short durations in the bars condition and more long durations with the interactive conditions.
+
+Honestly the response time data is not too interesting, but it's worth checking.
 
 
 ### Interactions
@@ -368,7 +370,7 @@ aggbars_df %>%
   theme_bw()
 ```
 
-We can see that aggbars users create views conditioning on gene about as much as they create views conditioning on treatment.
+We can see that aggbars users create views conditioning on gene almost as much as they create views conditioning on treatment.
 
 ```{r}
 filtbars_df %>%
@@ -394,7 +396,7 @@ aggbars_df <- aggbars_df %>%
 sum(aggbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
 ```
 
-For filtbars this means intentionally creating views that condition on both treatment and notreatment, which we see in about 33% of trials.
+For filtbars this means intentionally creating views that condition on both treatment and no treatment, which we see in about 25% of trials.
 
 ```{r}
 filtbars_df <- filtbars_df %>% 
@@ -402,12 +404,22 @@ filtbars_df <- filtbars_df %>%
     condition_on_treat = any(str_detect(unlist(state), "^Treatment$")) & any(str_detect(unlist(state), "^NoTreatment$"))
   )
 
-sum(filtbars_df$condition_on_treat) / length(filtbars_df$condition_on_treat)
+sum(filtbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
 ```
 
-The fact that people who interact with aggbars focus less on task relevant views than people who interact with filtbars may help to explain why interacting with aggbars is associated with worse performance while interacting with filtbars is associated with better performance. 
+Users seem to create task-relevant views of the data similarly often in both interactive conditions.
 
-Also, baseline performance with filtbars when people don't interact is horrible, whereas baseline performance with aggbars when people don't interact is decent. These different baselines may have something to do with the opposite directions of effect of interacting with the visualizations, since performance with filtbars could really only improve from baseline.
+For filtbars, it seems like more users condition on treatment than no treatment. Maybe they are comparing the subset of data where people receive treatment to the overall data. Although this is not as rigorous as conditioning on both treatment and no treatment in turn, it shows task relevant signal. What proportion of trials to filtbars users intentionally create views that condition on treatment? Looks like about 48% of trials.
+
+```{r}
+filtbars_df <- filtbars_df %>% 
+  mutate(
+    condition_on_treat = any(str_detect(unlist(state), "^Treatment$"))
+  )
+
+sum(filtbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
+```
+
 
 ### Demographics
 
@@ -456,7 +468,7 @@ df %>%
     theme_bw()
 ```
 
-Lots of college educated MTurk workers. This is probably a good thing since we are studying how people do data analysis, and analysts tend to be college educated.
+Lots of college educated MTurk workers. This is probably a good thing for our study since we are studying how people do data analysis, and analysts tend to be college educated.
 
 Last, let's look at chart use.
 

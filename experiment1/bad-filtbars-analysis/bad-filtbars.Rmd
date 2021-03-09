@@ -1,0 +1,209 @@
+---
+title: "Bad data for initial run of filtbars condition"
+author: "Alex Kale"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggdist)
+library(RColorBrewer)
+set.seed(1234)
+```
+
+## Overview: Bad data for initial run of filtbars
+
+When we ran the initial data collection for E1, there was a bug in the interface that showed people in the filtbars condition different data than users in other conditions. Specifically, the numbers of people with and without disease in the group that had the gene and received treatment were replaced with the numbers for the group where people didn't have the gene and received treatment.
+
+In this document, we show that filtbars users were shown data containing less signal than users in other conditions. We do this be repairing the precomputed ground truth causal support to account for what users in the filtbars condition actually saw during the initial round of data collection. The lack of signal in the data they were shown helps explain why these users did so poorly on the task. Also, the fact that we showed chart users different data in the filtbars condition than the data used to compute ground truth causal support invalidates comparisons between filtbars and other conditions in our initial data analysis for E1 (i.e., the `experiment1/bad-filtbars-analysis/` folder of the repo).
+
+The way that this bug invalidates our original filtbars data set justifies recollecting data for the filtbars condition and redoing the analysis (i.e., the `experiment1/analysis/` folder of the repo).
+ 
+
+### Prepare data
+
+First, we load and prepare the data set that we used for modeling before we noticed the issue.
+
+```{r}
+df <- read_csv("e1-anonymous.csv")
+
+head(df)
+```
+
+Calculate a log response ratio `lrr` to model as a function of `causal_support`. Also, convert predictor variables to factors for modeling if need be.
+
+```{r}
+model_df <- df %>%
+  # drop practice trial
+  filter(trial != "practice") %>%
+  mutate(
+    # response units
+    response_A =  if_else(
+      response_A > 99.5, 99.5,
+      if_else(
+        response_A < 0.5, 0.5,
+        as.numeric(response_A))),
+    response_B =  if_else(
+      response_B > 99.5, 99.5,
+      if_else(
+        response_B < 0.5, 0.5,
+        as.numeric(response_B))),
+    lrr = log(response_A / 100) - log(response_B / 100),
+    # predictors as factors
+    worker = as.factor(workerId),
+    vis = as.factor(condition),
+    n = as.factor(n),
+    # derived predictors
+    delta_p = (count_nGnT + count_GnT)/(total_nGnT + total_GnT) - (count_nGT + count_GT)/(total_nGT + total_GT),
+    interactions_processed = if_else(interactions == "placeholder", list(NA), str_split(interactions, "_")),
+    trial = as.numeric(trial),
+    trial_n = (trial - mean(trial)) / max(trial) # normalized trial indices
+  ) %>%
+  rowwise() %>%
+  mutate(interact = !any(is.na(unlist(interactions_processed)))) %>% # boolean to code for any interaction whatsoever
+  unite("vis_interact", vis, interact, remove = FALSE)
+```
+
+Let's exclude workers who miss the trial where causal support is the largest. We define miss as absolute error greater than 50%. This mean conditioning on only one of our attention checks to exclude about 22% of participants, rather than conditioning on both attention checks as preregistered which would exclude 48% of participants. 48% is too much, and this reflects the fact that we underestimated the difficulty of our second attention check trial, where causal support is at a minimum. Here, we are departing from our preregistration, but we are doing so in a way that admits more noise into our sample and is thus a more conservative analysis decision than the exclusion criteria we preregistered.
+
+```{r}
+exclude_df <- model_df %>%
+  group_by(workerId) %>%
+  summarise(
+    max_trial_idx = which(trial_idx == -1)[1],
+    max_trial_gt = ground_truth[[max_trial_idx]],
+    max_trial_err = abs_err[[max_trial_idx]],
+    exclude = max_trial_err > 0.5
+  )
+
+head(exclude_df)
+```
+
+Apply the exclusion criteria.
+
+```{r}
+model_df = exclude_df %>%
+  select(workerId, exclude) %>%
+  full_join(model_df, by = "workerId") %>%
+  filter(!exclude) %>%
+  select(-exclude)
+```
+
+Additionally, we'll drop all attention check trials now that we are done using them for exclusions. Because of a bug that inserted extra attention check trials for the first 135 workers, this means dropping more trials than it should for this subset of workers. Thus, we have more trials per participant after the bug was fixed.
+
+```{r}
+model_df = model_df %>%
+  filter(trial_idx != -1 & trial_idx != -2)
+```
+
+How many participants per condition after exclusions? (target sample size was 80 per condition)
+
+```{r}
+model_df %>%
+  group_by(vis) %>%
+  summarise(
+    n = length(unique(workerId))
+  )
+```
+
+We overshot our target sample size slightly in all but one condition. This happened because we launch HITs in batches on MTurk, and it is hard to anticipate how many people in a batch will pass the exclusion criterion. The few extra participants should not make much of a difference in our results.
+
+
+
+### Repairing causal support for filtbars
+
+In order to investigage how the bug in our interface impacted the signal in charts, we need to recompute causal support for the filtbars condition making the same data substitution that we made by accident in the interface code.
+
+To operationalize a normative judgment, we set up a Monte Carlo simulation for each alternative DAG as in `experiment1/study-planning.Rmd`. This version is modified to reproduce the bug in the interface.
+
+```{r}
+# expects data as counts from a two-way table formatted as follows:
+#   count_nGnT  - count with disease given gene F and treatment F
+#   total_nGnT  - total given gene F and treatment F
+#   count_nGT   - count with disease given gene F and treatment T
+#   total_nGT   - total given gene F and treatment T
+#   count_GnT   - count with disease given gene T and treatment F
+#   total_GnT   - total given gene T and treatment F
+#   count_GT    - count with disease given gene T and treatment T
+#   total_GT    - total given gene T and treatment T
+# the boolean treatment_works determines which DAG is simulated
+likelihood_from_monte_carlo_bad_filtbars <- function (count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, treatment_works = TRUE) {
+  # define parameters (sample from uniform distribution)
+  m <- 10000             # number of simulations
+  p_disease <- runif(m)  # base rate of disease due to unknown causes
+  p_gene_d <- runif(m)   # probability that gene causes disease
+  if (treatment_works) {
+    p_treat <- runif(m)  # probability that treatment prevents disease
+  } else {
+    p_treat <- rep(0, m) # treatment has no effect on disease
+  }
+  
+  
+  # calculate counts for each possible outcome in the contingengy table
+  counts <- cbind(
+    count_nGnT,
+    total_nGnT - count_nGnT,
+    count_nGT,
+    total_nGT - count_nGT,
+    count_GnT,
+    total_GnT - count_GnT,
+    count_GnT,             # replicating javascript error in filtbars
+    total_GnT - count_GnT
+  )
+  
+  # calculate probabilies for each possible outcome in the contingency table
+  probs <- cbind(
+    p_disease,                                                                           # p(disease|gene F, treatment F)
+    (1 - p_disease),                                                                     # p(~disease|gene F, treatment F)
+    p_disease*(1 - p_treat),                                                             # p(disease|gene F, treatment T)
+    (1 - p_disease) + p_disease*p_treat,                                                 # p(~disease|gene F, treatment T)
+    p_gene_d + p_disease - p_gene_d*p_disease,                                           # p(disease|gene T, treatment F)
+    (1 - p_gene_d)*(1 - p_disease),                                                      # p(~disease|gene T, treatment F)
+    (p_gene_d + p_disease - p_gene_d*p_disease)*(1 - p_treat),                           # p(disease|gene T, treatment T)
+    (1 - p_gene_d)*(1 - p_disease) + (p_gene_d + p_disease - p_gene_d*p_disease)*p_treat # p(~disease|gene T, treatment T)
+  )
+  
+  # calculate log likelihood of data for each of m runs of the simulation
+  loglik <- rowSums(matrix(rep(counts, m), nrow = m, ncol = 8, byrow = TRUE) * log(probs))
+  # normalize by maximum likelihood to make probabilities comparable across Monte Carlo simulations
+  # and marginalize over simulated parameter values
+  logmax <- max(loglik)
+  logscore <- logmax + log(sum(exp(loglik - logmax))) - log(m)
+}
+```
+
+Repair causal support for filtbars condition by applying the function we just defined to the data shown on each trial for filtbars users.
+
+```{r}
+model_df = model_df %>%
+  rowwise() %>%
+  mutate(
+    # repair causal support to adjust for data processing error
+    causal_support = if_else(condition == "filtbars", 
+      likelihood_from_monte_carlo_bad_filtbars(count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, TRUE) - likelihood_from_monte_carlo_bad_filtbars(count_nGnT, total_nGnT, count_nGT, total_nGT, count_GnT, total_GnT, count_GT, total_GT, FALSE),
+      as.numeric(causal_support)
+      ),
+    # re-calculate normative response
+    ground_truth = plogis(causal_support)
+  )
+```
+
+Now, let's visualize the ground truth probability that treatment works as a function of delta p and sample size, faceting by visualization condition to show how filtbars users were shown a lesser degree of signal.
+
+```{r}
+model_df %>% 
+  ggplot(aes(x = delta_p, y = ground_truth)) +
+  geom_point(alpha = 0.1) +
+  scale_fill_brewer() +
+  theme_bw() +
+  facet_grid(n ~ condition)
+```
+
+We can see that the task was much harder for users in the filtbars condition as indicated by the truncated range of ground truth values on the y-axis. These users did not have an equal chance to do well on the task. The key take-away here is that the bug in our interface messed up our stimulus generation for filtbars so badly that we just need to throw out the original batches of filtbars data and restart data collection for that condition.
