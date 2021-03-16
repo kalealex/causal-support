@@ -1,0 +1,634 @@
+---
+title: "E1 Results"
+author: "Alex Kale"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(brms)
+library(ggplot2)
+library(tidybayes)
+library(modelr)
+library(RColorBrewer)
+```
+
+## Results
+
+In this document, we present the results of our first experiment. This is intended as a supplement to the full paper. Here, we gather information from our exploratory analysis and model expansion processes, with an emphasis on what we've learned and an eye toward what should be presented in the paper.
+
+
+### Analysis overview
+
+Our primary research questions focus on how visualization conditions impact the correspondence between user responses and our normative benchmark *causal support*. Causal support says how much a chart user should believe in alternative causal explanations given a data set. In our first experiment, we ask users to differentiate between two alternative causal models, one with a treatment effect (explanation A) and one without a treatment effect (explanation B). 
+
+We estimate the correspondence between user responses and our normative benchmark using a linear in log odds (LLO) model, where ideal performance is a one-to-one relationship between a user's responses and normative causal support. We characterize performance primarily in terms of LLO slopes with respect to causal support, which is a measure of sensitivity to the signal in each data set that should support causal inferences. The LLO also has an intercept term, which measures the average response when there is no signal to support either causal explanation. Intercepts represent an overall bias in responses to the extent that they deviate from 50%.
+
+We look at how LLO slopes and intercepts very as a function of visualization condition. In interactive visualization conditions, we separate trials depending on whether or not users interacted with the visualization, which reduces statistical power in these conditions but enables us to be more accurate in estimating the effects of interactive visualizations on causal inferences. At the end of the document we follow up and do a descriptive analysis of how chart users interacted with these visualizations, specifically, which views of the data they chose to create.
+
+
+### Prepare data
+
+Load data.
+
+```{r}
+df <- read_csv("e1-anonymous.csv")
+
+head(df)
+```
+
+Calculate a log response ratio `lrr` to model as a function of `causal_support`. Also, convert predictor variables to factors for modeling if need be.
+
+```{r}
+model_df <- df %>%
+  # drop practice trial
+  filter(trial != "practice") %>%
+  # drop bad batches of filtbars data
+  filter(condition != "filtbars" | batch > 61) %>% 
+  # drop one participant who is missing an attention check trial for some reason
+  filter(!workerId %in% c("00163888")) %>%
+  mutate(
+    # response units
+    response_A =  if_else(
+      response_A > 99.5, 99.5,
+      if_else(
+        response_A < 0.5, 0.5,
+        as.numeric(response_A))),
+    response_B =  if_else(
+      response_B > 99.5, 99.5,
+      if_else(
+        response_B < 0.5, 0.5,
+        as.numeric(response_B))),
+    lrr = log(response_A / 100) - log(response_B / 100),
+    # predictors as factors
+    worker = as.factor(workerId),
+    condition = as.factor(condition),
+    n = as.factor(n),
+    # derived predictors
+    delta_p = (count_nGnT + count_GnT)/(total_nGnT + total_GnT) - (count_nGT + count_GT)/(total_nGT + total_GT),
+    interactions_processed = if_else(interactions == "placeholder", list(NA), str_split(interactions, "_")),
+    trial = as.numeric(trial),
+    trial_n = (trial - mean(trial)) / max(trial) # normalized trial indices
+  ) %>%
+  rowwise() %>%
+  # boolean to code for any interaction whatsoever
+  mutate(interact = !any(is.na(unlist(interactions_processed)))) %>% 
+  # subset trial in the interactive condition depending on whether users interact at all, treating these as different factors
+  unite("vis", condition, interact, remove = FALSE)
+```
+
+Let's exclude workers who miss the trial where causal support is the largest. We define miss as absolute error greater than 50%. This mean conditioning on only one of our attention checks to exclude about 26% of participants, rather than conditioning on both attention checks as preregistered which would exclude 48% of participants. 48% is too much, and this reflects the fact that we underestimated the difficulty of our second attention check trial, where causal support is at a minimum. Here, we are departing from our preregistration, but we are doing so in a way that admits more noise into our sample and is thus a more conservative analysis decision than the exclusion criteria we preregistered.
+
+```{r}
+exclude_df <- model_df %>%
+  group_by(workerId) %>%
+  summarise(
+    max_trial_idx = which(trial_idx == -1)[1],
+    max_trial_gt = ground_truth[[max_trial_idx]],
+    max_trial_err = abs_err[[max_trial_idx]],
+    exclude = max_trial_err > 0.5
+  )
+
+head(exclude_df)
+```
+
+Apply the exclusion criteria.
+
+```{r}
+model_df = exclude_df %>%
+  select(workerId, exclude) %>%
+  full_join(model_df, by = "workerId") %>%
+  filter(!exclude) %>%
+  select(-exclude)
+```
+
+Additionally, we'll drop all attention check trials now that we are done using them for exclusions. Because of a bug that inserted extra attention check trials for the first 135 workers, this means dropping more trials than it should for this subset of workers. Thus, we have more trials per participant after the bug was fixed.
+
+```{r}
+model_df = model_df %>%
+  filter(trial_idx != -1 & trial_idx != -2)
+```
+
+How many participants per condition after exclusions? (target sample size was 80 per condition)
+
+```{r}
+model_df %>%
+  group_by(condition) %>%
+  summarise(
+    n = length(unique(workerId))
+  )
+```
+
+We overshot our target sample size slightly in all but one condition. This happened because we launch HITs in batches on MTurk, and it is hard to anticipate how many people in a batch will pass the exclusion criterion. The few extra participants should not make much of a difference in our results.
+
+
+### Inferential model
+
+This is the model that we will use statistical inferences, and it is the result of our preregistered model expansion process. See ModelExpansion.Rmd for more information about how we arrived at this model.
+
+```{r}
+m <- brm(data = model_df, family = "gaussian",
+  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support*delta_p + causal_support*n|workerId)),
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),         # center at mean(qlogis(model_df$response_A / 100))
+            prior(normal(0, 0.5), class = b),                        # center predictor effects at 0
+            prior(normal(1, 0.5), class = b, coef = causal_support), # center at unbiased slope
+            prior(normal(0, 0.5), class = sigma),                    # weakly informative half-normal
+            prior(normal(0, 0.5), class = sd),                       # weakly informative half-normal
+            prior(lkj(4), class = cor)),                             # avoiding large correlations
+  iter = 3000, warmup = 500, chains = 2, cores = 2,
+  control = list(adapt_delta = 0.99, max_treedepth = 12),
+  file = "model-fits/6a_re-within")
+```
+
+
+```{r}
+summary(m)
+```
+
+### Main effects of visualization
+
+*Recall:* We estimate the correspondence between user responses and our normative benchmark using a linear in log odds (LLO) model, where ideal performance is a one-to-one relationship between a user's responses and normative causal support. We chartacterize performance primarily in terms of LLO slopes with respect to causal support, which is a measure of sensitivity to the signal in each data set that should support causal inferences. The LLO also has an intercept term, which measures the average response when there is no signal to support either causal explanation. Intercepts represent an overall bias in responses to the extent that they deviate from 50%.
+
+To start, lets derive slopes and intercepts from our model.
+
+```{r}
+# extract conditional expectations from model
+results_df <- model_df %>%
+  group_by(n, vis) %>%
+  data_grid(
+    causal_support = c(0, 1),
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20)))) %>%
+  add_fitted_draws(m, value = "lrr_rep", seed = 1234, n = 500, re_formula = NA) %>%
+  select(-one_of(c(".row",".chain",".iteration")))
+
+# derive slopes
+slopes_df <- results_df %>%
+  compare_levels(lrr_rep, by = causal_support) %>%
+  rename(slope = lrr_rep)
+
+# derive intercepts and merge dataframes
+results_df <- results_df %>%
+  filter(causal_support == 0) %>%
+  rename(intercept = lrr_rep) %>%
+  full_join(slopes_df, by = c("n", "vis", "delta_p", ".draw"))
+```
+
+Let's also set the level order for our visualization conditions for plotting.
+
+```{r}
+# relevel vis conditions to control plotting order
+results_df <- results_df %>%
+  mutate(
+    vis_order = case_when(
+      as.character(vis) == "text_FALSE"     ~ 1,
+      as.character(vis) == "icons_FALSE"    ~ 2,
+      as.character(vis) == "bars_FALSE"     ~ 3,
+      as.character(vis) == "aggbars_FALSE"  ~ 4,
+      as.character(vis) == "aggbars_TRUE"   ~ 5,
+      as.character(vis) == "filtbars_FALSE" ~ 6,
+      as.character(vis) == "filtbars_TRUE"  ~ 7,
+      TRUE                                  ~ 0
+    ),
+    vis = reorder(vis, vis_order)
+  ) 
+```
+
+Let's look at posterior estimates of the slope and intercept in each visualization condition.
+
+We'll start with *slopes*.
+
+```{r}
+results_df %>%
+  group_by(vis, vis_order, .draw) %>%          # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>%  # marginalize
+  ggplot(aes(x = reorder(vis, vis_order), y = slope)) +
+    stat_halfeye() +
+    theme_bw()
+```
+```{r eval=FALSE}
+# figure for paper
+plt <- results_df %>%
+  group_by(vis, vis_order, .draw) %>%          # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>%  # marginalize
+  ggplot(aes(x = slope, y = reorder(vis, desc(vis_order)))) +
+    stat_slabh() +
+    theme_minimal() +
+    theme(
+      axis.title = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+plt
+# ggsave("../../figures/components/e1-slopes.svg", plt, width = 3, height = 2)
+```
+ 
+Let's look at pairwise contrasts to see reliability of these visualization effects on LLO slopes. We'll flip the cooridinates so we have more space to put the labels for each pairwise difference.
+
+```{r}
+slopes_df %>%
+  group_by(vis, .draw) %>%                    # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>% # marginalize
+  compare_levels(slope, by = vis) %>%
+  ggplot(aes(x = slope, y = vis)) +
+    stat_halfeyeh() +
+    theme_bw() +
+    labs(
+      x = "Slope diff",
+      y = "Contrast"
+    )
+```
+ 
+We can see that all other visualization conditions outperform filtbars when users don't interact with LLO slopes closer to 1. Differences between all other conditions conditions are not reliable. Overall, slopes are far from 1 in all conditions reflecting the difficulty of causal inference as a task.
+
+When users do not interact with filtbars, they do terrible, but their performance improves reliably they take the time to interact. This is expected insofar as the task should be impossible if users do not interact with filtbars since the signal in the chart is hidden behind interactions.
+
+Interestingly, users actually perform slightly worse with aggbars when they take the time to interact with the visualization which is unexpected, although this difference is not reliable. In the paper, we remark on why we might see opposite directions of effects of interacting with aggbars vs filtbars.
+
+Now, let's look at *intercepts*.
+ 
+```{r}
+results_df %>%
+  group_by(vis, vis_order, .draw) %>%                 # group by predictors to keep
+  summarise(intercept = weighted.mean(intercept)) %>% # marginalize 
+  ggplot(aes(x = reorder(vis, vis_order), y = intercept)) +
+    stat_halfeye() +
+    geom_hline(yintercept = qlogis(0.5), color = "red") +
+    theme_bw()
+```
+
+As before, let's look at pairwise contrasts to see reliability of these visualization effects on LLO intercepts.
+
+```{r}
+results_df %>%
+  group_by(vis, .draw) %>%                            # group by predictors to keep
+  summarise(intercept = weighted.mean(intercept)) %>% # marginalize 
+  compare_levels(intercept, by = vis) %>%
+  ggplot(aes(x = intercept, y = vis)) +
+    stat_halfeyeh() +
+    theme_bw() +
+    labs(
+      x = "Intercept diff",
+      y = "Contrast"
+    )
+```
+
+These intercepts show substantial response bias when there is no signal to support either causal explanation for all conditions but filtbars. In the visualization conditions with a tabular layout, chart users consistently underestimate the treatment effect.
+
+Icons lead to reliably more bias than text, bars, and aggbars. Text, bars, and aggbars are not reliably different from each other in term of bias.
+
+Filtbars are unique in that users average response in the absence of signal is not reliably different from the normative response. 
+
+Effects of interaction are not reliable, but overestimation bias seems to decrease slightly when users interact with filtbars.
+
+*We can also frame these slopes and intercepts in terms of the response scale.*
+
+On the response scale, *slopes* are a change in the average user's subjective probability that there is a treatment effect given an increase in ground truth from `plogis(0) = 0.50` to `plogis(1) = 0.73`. A slope of 1 corresponds to an increase of 23% in the normative probability of a treatment effect.
+
+```{r}
+results_df %>%
+  group_by(vis, vis_order, .draw) %>% # group by predictors to keep
+  summarise(                          # marginalize
+    slope = weighted.mean(slope),
+    intercept = weighted.mean(intercept)
+  ) %>% 
+  mutate(
+    response_A_rep_diff = (plogis(slope + intercept) - plogis(intercept)) * 100
+  ) %>%
+  ggplot(aes(x = reorder(vis, vis_order), y = response_A_rep_diff)) +
+    stat_halfeye() +
+    geom_hline(yintercept = 23, color = "red") +
+    theme_bw()
+```
+
+This view of the data reiterates that people are far less sensitive to the signal in the charts than they should be.
+
+On the response scale, *intercepts* are just the average response where the ground truth is `plogis(0) = 0.5`. A response of 50% is ideal when there is no signal in the data.
+
+```{r}
+results_df %>%
+  group_by(vis, vis_order, .draw) %>% # group by predictors to keep
+  summarise(                          # marginalize
+    intercept = weighted.mean(intercept)
+  ) %>% 
+  mutate(
+    response_A_rep = plogis(intercept) * 100
+  ) %>%
+  ggplot(aes(x = reorder(vis, vis_order), y = response_A_rep)) +
+    stat_halfeye() +
+    geom_hline(yintercept = 50, color = "red") +
+    theme_bw()
+```
+
+```{r eval=FALSE}
+# figure for paper
+plt <- results_df %>%
+  group_by(vis, vis_order, .draw) %>% # group by predictors to keep
+  summarise(                          # marginalize
+    intercept = weighted.mean(intercept)
+  ) %>% 
+  mutate(
+    response_A_rep = plogis(intercept) * 100
+  ) %>%
+  ggplot(aes(x = response_A_rep, y = reorder(vis, desc(vis_order)))) +
+    stat_slabh() +
+    geom_vline(xintercept = 50, color = "red") +
+    theme_minimal() +
+    theme(
+      axis.title = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+plt
+# ggsave("../../figures/components/e1-intercepts.svg", plt, width = 3, height = 2)
+```
+
+This view of the data helps us make sense of the magnitude of bias in the task. For example, users are underestimating the probability of a treatment effect by as much as 20% with icon arrays. This is a very large amount of bias and was not necessarily something we expected to see (i.e., this was not even a preregistered comparison).
+
+
+### Interactions of visualization with delta p and sample size
+
+In addition to how LLO slopes vary as a function of visualization condition, we want to investigate what aspects of the signal in a chart users seems to struggle to interpret. *The signal in our task for experiment 1 can be broken down into two attributes of the stimulus: delta p and sample size.*
+
+*Delta p* is the difference in the proportion of people in each data set with the disease depending on whether they did vs didn't receive the treatment. Negative values of delta p indicate that a greater proportion of people had the disease in the treatment group than in the no treatment group (i.e., evidence against treatment effectiveness). Positive values of delta p indicate that a smaller proportion of people had the disease if they received treatment than if they didn't (i.e., evidence for treatment effectiveness).
+
+*Sample size* is just the overall number of people in the fake data sets we showed on each trial.
+
+In the ideal observer, there should be no residual effects of delta p and sample size after we've adjusted for the influence of causal support on user judgments. However, users have perceptual and cognitive biases in interpreting charts, which result in residual effects of delta p and sample size on user's responses.
+
+Here, we investigate preregistered comparisons of LLO slopes at different levels of delta p and sample size for each visualization condition. The degree to which LLO slopes deviate from one indicates how much these perceptual and cognitive biases distort sensitivity to the signal in charts.
+
+#### Slopes
+
+First, let's look at the *interaction between delta p and visualization condition on LLO slopes*. These lines should be flat with a y-intercept of 1 in an ideal observer.
+
+```{r}
+results_df %>%
+  group_by(delta_p, vis, vis_order, .draw) %>%  # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>%   # marginalize
+  ggplot(aes(x = delta_p, y = slope, group = .draw)) +
+    geom_line(alpha = 0.1) +
+    theme_bw() + 
+    facet_grid(. ~ reorder(vis, vis_order))
+```
+
+```{r eval=FALSE}
+# figure for paper
+plt <- results_df %>%
+  group_by(delta_p, vis, vis_order, .draw) %>%  # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>%   # marginalize
+  ggplot(aes(x = delta_p, y = slope, group = .draw)) +
+    geom_line(alpha = 0.1) +
+    theme_minimal() + 
+    theme(
+      axis.title = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.text = element_blank()
+    ) +
+    facet_grid(. ~ reorder(vis, vis_order))
+
+plt
+# ggsave("../../figures/components/e1-delta-p.svg", plt, width = 7, height = 1.5)
+```
+
+We can see that especially in the conditions where users perform the best overall (i.e., text, icons, bars, aggbars_FALSE, and filtbars_TRUE), users are more sensitive to signal (slopes closer to 1) in the charts when delta p is negative. This suggests that users are more sensitive to evidence against a treatment effect than evidence for one. Interestingly, this pattern seems to diminish when users interact with aggbars, with less sensitively at negative delta p, which may help to explain poorer performance when users interact with aggbars. Conversely, users become a lot more sensitive to negative delta p when they interact with filtbars. In the paper, we remark on why we might see disproportionate sensitivity evidence falsifying a causal relationship rather than verifying one.
+
+Now, let's look at the *interaction between sample size and visualization condition on LLO slopes*.
+
+```{r}
+results_df %>%
+  group_by(n, vis, vis_order, .draw) %>%          # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>%     # marginalize
+  ggplot(aes(x = n, y = slope)) +
+    stat_halfeye() +
+    theme_bw() +
+    facet_grid(. ~ reorder(vis, vis_order))
+```
+
+```{r eval=FALSE}
+# figure for paper
+plt <- results_df %>%
+  group_by(n, vis, vis_order, .draw) %>%      # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>% # marginalize
+  ggplot(aes(x = n, y = slope)) +
+    stat_slab() +
+    theme_minimal() + 
+    theme(
+      axis.title = element_blank(),
+      panel.grid.minor = element_blank(),
+      strip.text = element_blank()
+    ) +
+    facet_grid(. ~ reorder(vis, vis_order))
+
+plt
+# ggsave("../../figures/components/e1-n.svg", plt, width = 7, height = 1.5)
+```
+
+We see that users are less sensitive to the signal in charts as sample size increases, with the exception of the text condition, where this pattern is less pronounced, and filtbars_FALSE, where performance is poor across the board. In particular, users seem to do best at low sample size, perhaps because the relatively small amount of data is a cue that strong inferences are not warranted. Although, this pattern may be more of a perceptual bias than a cognitive one. This result is consistent with prior work showing that people underestimate the number of items in a set and underestimate sample size for the purpose of making visual inferences with data.
+
+#### Intercepts
+
+Although we did not preregister comparisons looking at the *interaction of visualization, delta p, and sample size on LLO intercepts*, the substantial amount of bias we saw in the intercept estimates per visualization condition make us curious.
+
+We'll start by looking at the *interaction of delta p and visualization on LLO intercepts*. This is somewhat of a nonsensical counterfactual insofar as causal support depends in part on delta p, and extreme values of delta p seldom occur when ground truth causal support is 0 (i.e., at the intercept), with the exception of very very small sample sizes.
+
+```{r}
+results_df %>%
+  group_by(delta_p, vis, vis_order, .draw) %>%         # group by predictors to keep
+  summarise(intercept = weighted.mean(intercept)) %>%  # marginalize
+  ggplot(aes(x = delta_p, y = intercept, group = .draw)) +
+    geom_line(alpha = 0.1) +
+    theme_bw() + 
+    facet_grid(. ~ reorder(vis, vis_order))
+```
+
+Here, we see what we expect to see if people understand the task. All else being equal, users say the treatment effect is more likely when the difference in the proportion of people with the disease suggests an effective treatment. This is a nice sanity check more than anything else.
+
+Now, we'll look at the *interaction of sample size and visualization on LLO intercepts*. This query makes more sense than the last one since we can imagine scenarios at any sample size where the evidence for a treatment effect would appear totally ambiguous (i.e., ground truth causal support = 0).
+
+```{r}
+results_df %>%
+  group_by(n, vis, vis_order, .draw) %>%              # group by predictors to keep
+  summarise(intercept = weighted.mean(intercept)) %>% # marginalize
+  ggplot(aes(x = n, y = intercept)) +
+    stat_halfeye() +
+    theme_bw() +
+    facet_grid(. ~ reorder(vis, vis_order))
+```
+
+We can see that users tend to be the least biased in their responses at small sample sizes, especially with icons, bars, and aggbars. This bias to underestimate the probability of a treatment effect more at larger sample sizes is a clear pattern, but it is unclear why sample size would impact the response that the user gives on average when there is no signal in the chart. This effect should not be confused with the lower sensitivity to evidence (slopes further from 1) that we expected to see because people tend to underestimate sample size itself, though these effects may be related. 
+
+Alternatively, perhaps chart users attempt to account for sample size by adjusting their willingness to believe in a treatment effect on average. For example, when sample size is larger, maybe chart users are less willing to believe that delta p of zero is plausible given a treatment that is actually effective. However, we can only speculate about this.
+
+
+### User interactions with aggbars and filtbars
+
+Let's analyze how users interacted with the aggbars and filtbars visualization conditions, respectively. 
+
+We'll start by writing functions to reconstruct the state of each visualization on each trial based on interaction logs.
+
+```{r}
+reconstruct_state_aggbars <- function(interactions) {
+  # starting state is conditioning on both gene and treatment
+  states <- list("gene_treat_init")
+  
+  for(i in 1:length(interactions)) {
+    if (interactions[i] == "collapseRow" & str_detect(states[length(states)], "^gene_treat")) {
+      states <- append(states, list("treat"))
+    } else if (interactions[i] == "collapseRow" & states[length(states)] == "gene") {
+      states <- append(states, list("none"))
+    } else if (interactions[i] == "expandRow" & states[length(states)] == "treat") {
+      states <- append(states, list("gene_treat"))
+    } else if (interactions[i] == "expandRow" & states[length(states)] == "none") {
+      states <- append(states, list("gene"))
+    } else if (interactions[i] == "collapseCol" & str_detect(states[length(states)], "^gene_treat")) {
+      states <- append(states, list("gene"))
+    } else if (interactions[i] == "collapseCol" & states[length(states)] == "treat") {
+      states <- append(states, list("none"))
+    } else if (interactions[i] == "expandCol" & states[length(states)] == "gene") {
+      states <- append(states, list("gene_treat"))
+    } else if (interactions[i] == "expandCol" & states[length(states)] == "none") {
+      states <- append(states, list("treat"))
+    } 
+  }
+  
+  return(unlist(states))
+}
+```
+
+```{r}
+reconstruct_state_filtbars <- function(interactions) {
+  # starting state is conditioning on nothing
+  states <- list("none_init")
+  curr <- "" # state is a chain of filters
+  
+  for(i in 1:length(interactions)) {
+    if (interactions[i] == "clearFilters") {
+      curr <- ""
+      states <- append(states, list("none"))
+    } else if (str_detect(interactions[i], "^filter") & str_detect(states[length(states)], "^none")) {
+      # first filter
+      curr <- sub("^filter", "", interactions[i])
+      states <- append(states, list(curr))
+    } else if (str_detect(interactions[i], "^filter") & !str_detect(curr, paste(".*", sub("^filter", "", interactions[i]), ".*", sep = ""))) { 
+      # only add interactions not already in the chain (don't log duplicate filters which do not change the state)
+      # put chain of filters including the current one into consistent order (so string matching can identify unique states)
+      curr <- pmap_chr(list(curr, sub("^filter", "", interactions[i])), ~paste(sort(c(...)), collapse = "_"))
+      states <- append(states, list(curr))
+    }
+  }
+  
+  return(unlist(states))
+}
+```
+
+Now, we'll reconstruct the states visited on each trial for each visualization separately.
+
+```{r}
+aggbars_df <- model_df %>% 
+  filter(condition == "aggbars") %>%
+  rowwise() %>%
+  mutate(
+    interactions = str_split(interactions, "_"),
+    state = list(reconstruct_state_aggbars(interactions))
+  )
+```
+
+```{r}
+filtbars_df <- model_df %>% 
+  filter(condition == "filtbars") %>%
+  rowwise() %>%
+  mutate(
+    interactions = str_split(interactions, "_"),
+    state = list(reconstruct_state_filtbars(interactions))
+  )
+```
+
+Let's view a histogram of the *states visited by users of aggbars*. These are named according to the conditions that users applied to the data in order to (dis)aggregate it.
+
+```{r}
+aggbars_df %>%
+  group_by(trial, workerId) %>%
+  unnest(cols = c("state")) %>%
+  ggplot(aes(y = state)) +
+  geom_bar() +
+  theme_bw()
+```
+
+We can see that aggbars users create views conditioning on gene about as much as they create views conditioning on treatment.
+
+Now, let's view a histogram of the *states visited by users of filtbars*. These are named according to the conditions that users applied to the data in order to filter it.
+
+```{r}
+filtbars_df %>%
+  group_by(trial, workerId) %>%
+  unnest(cols = c("state")) %>%
+  ggplot(aes(y = state)) +
+  geom_bar() +
+  theme_bw()
+```
+
+We can see that users of filtbars are more likely to condition on treatment, if they interact with the visualization. Interestingly, some users also click the disease bar. While conditioning on the outcome variable is not a statistically valid strategy, it is a quick and intuitive way to see what other factors are most associated with getting the disease.
+
+We can also see that users of filtbars interact far more than users of aggbars, perhaps because they need to in order to see any signal in the charts whatsoever.
+
+```{r}
+sum(aggbars_df$interact)
+sum(!aggbars_df$interact)
+sum(filtbars_df$interact)
+sum(!filtbars_df$interact)
+```
+
+
+For both aggbars and filtbars, let's see *what proportion of users create views that should be most helpful for the task*.
+
+For aggbars this means intentionally creating views that condition on treatment, which we see in about 24% of trials.
+
+```{r}
+aggbars_df <- aggbars_df %>% 
+  mutate(
+    condition_on_treat = any(str_detect(unlist(state), ".*treat$"))
+  )
+
+sum(aggbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
+```
+
+For filtbars this means intentionally creating views that condition on both treatment and no treatment, which we see in about 26% of trials.
+
+```{r}
+filtbars_df <- filtbars_df %>% 
+  mutate(
+    condition_on_treat = any(str_detect(unlist(state), "^Treatment$")) & any(str_detect(unlist(state), "^NoTreatment$"))
+  )
+
+sum(filtbars_df$condition_on_treat) / length(filtbars_df$condition_on_treat)
+```
+
+Users seem to create task-relevant views of the data similarly often in both interactive conditions.
+
+For filtbars, it seems like more users condition on treatment than no treatment. Maybe they are comparing the subset of data where people receive treatment to the overall data. Although this is not as rigorous as conditioning on both treatment and no treatment in turn, it shows task relevant signal. What proportion of trials to filtbars users intentionally create views that condition on treatment? Looks like about 49% of trials.
+
+```{r}
+filtbars_df <- filtbars_df %>% 
+  mutate(
+    condition_on_treat = any(str_detect(unlist(state), "^Treatment$"))
+  )
+
+sum(filtbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
+``` 
+
+<!-- ```{r} -->
+<!-- # power analysis for E2 -->
+<!-- test <- slopes_df %>%  -->
+<!--   filter(vis %in% c("aggbars_FALSE", "aggbars_TRUE")) %>% -->
+<!--   group_by(vis, .draw) %>%           # group by predictors to keep -->
+<!--   summarise(slope = weighted.mean(slope)) %>% # marginalize -->
+<!--   compare_levels(slope, by = vis) %>% -->
+<!--   median_qi() -->
+
+<!-- (sqrt(sum(aggbars_df$interact) / 2 + sum(!aggbars_df$interact) / 2) * (test$.upper - test$.lower) / (2*abs(test$slope))) ^ 2 / 12 -->
+<!-- (sqrt(sum(aggbars_df$interact) / 2 + sum(!aggbars_df$interact) / 2) * (test$.upper - test$.lower) / (2*abs(test$slope))) ^ 2 / 18 -->
+<!-- (sqrt(sum(aggbars_df$interact) / 2 + sum(!aggbars_df$interact) / 2) * (test$.upper - test$.lower) / 0.1) ^ 2 / 18 -->
+<!-- ``` -->
+

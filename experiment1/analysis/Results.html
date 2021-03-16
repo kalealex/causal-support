@@ -11,7 +11,7 @@
 
 <meta name="author" content="Alex Kale" />
 
-<meta name="date" content="2021-03-09" />
+<meta name="date" content="2021-03-16" />
 
 <title>E1 Results</title>
 
@@ -365,7 +365,7 @@ summary {
 
 <h1 class="title toc-ignore">E1 Results</h1>
 <h4 class="author">Alex Kale</h4>
-<h4 class="date">2021-03-09</h4>
+<h4 class="date">2021-03-16</h4>
 
 </div>
 
@@ -1288,10 +1288,10 @@ sum(aggbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)</code
 <p>For filtbars this means intentionally creating views that condition on both treatment and no treatment, which we see in about 26% of trials.</p>
 <pre class="r"><code>filtbars_df &lt;- filtbars_df %&gt;% 
   mutate(
-    condition_on_treat = any(str_detect(unlist(state), &quot;^Treatment$&quot;)) &amp; any(str_detect(unlist(state), &quot;^NoTreatment$&quot;))
+    condition_on_treat_notreat = any(str_detect(unlist(state), &quot;^Treatment$&quot;)) &amp; any(str_detect(unlist(state), &quot;^NoTreatment$&quot;))
   )
 
-sum(filtbars_df$condition_on_treat) / length(filtbars_df$condition_on_treat)</code></pre>
+sum(filtbars_df$condition_on_treat_notreat) / length(filtbars_df$condition_on_treat_notreat)</code></pre>
 <pre><code>## [1] 0.259375</code></pre>
 <p>Users seem to create task-relevant views of the data similarly often in both interactive conditions.</p>
 <p>For filtbars, it seems like more users condition on treatment than no treatment. Maybe they are comparing the subset of data where people receive treatment to the overall data. Although this is not as rigorous as conditioning on both treatment and no treatment in turn, it shows task relevant signal. What proportion of trials to filtbars users intentionally create views that condition on treatment? Looks like about 49% of trials.</p>
@@ -1300,8 +1300,8 @@ sum(filtbars_df$condition_on_treat) / length(filtbars_df$condition_on_treat)</co
     condition_on_treat = any(str_detect(unlist(state), &quot;^Treatment$&quot;))
   )
 
-sum(filtbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)</code></pre>
-<pre><code>## [1] 0.4883721</code></pre>
+sum(filtbars_df$condition_on_treat) / length(filtbars_df$condition_on_treat)</code></pre>
+<pre><code>## [1] 0.4921875</code></pre>
 <!-- ```{r} -->
 <!-- # power analysis for E2 -->
 <!-- test <- slopes_df %>%  -->

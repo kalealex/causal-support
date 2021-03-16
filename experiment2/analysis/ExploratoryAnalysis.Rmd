@@ -1,5 +1,5 @@
 ---
-title: "Exploratory Analysis"
+title: "E2: Exploratory Analysis"
 author: "Alex Kale"
 date: "`r Sys.Date()`"
 output: html_document
@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(ggplot2)
-library(ggdist)
+library(tidybayes)
 # library(RColorBrewer)
 ```
 
@@ -18,48 +18,72 @@ library(ggdist)
 Load data.
 
 ```{r}
-df <- read_csv("pilot-anonymous.csv")
+df <- read_csv("e2-anonymous.csv")
 
 head(df)
 ```
-Drop practice trial.
+
+Drop practice trial, bad batches of filtbars data, and one participant who is missing an attention check trial for some reason.
 
 ```{r}
 df = df %>% filter(trial != "practice")
 ```
 
+<!-- ```{r} -->
+<!-- test <- df %>%  -->
+<!--   filter(trial == 1) %>% -->
+<!--   rowwise() %>% -->
+<!--   mutate(bonus = if_else(batch %in% c(0, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34), -->
+<!--                          as.numeric(bonus), -->
+<!--                          as.numeric(max(bonus, 0)))) -->
+
+<!-- test %>%  -->
+<!--   ggplot(aes(x = batch, y = bonus)) +  -->
+<!--   geom_bar(stat = "sum") +  -->
+<!--   theme_bw() -->
+<!-- ``` -->
 
 ### Exclusions
 
-Let's play with some possible exclusion criteria. When exploring exclusion criteria, I apply it here, and then I render the rest of the document to see the consequences.
-
-What I've decided on provisionally is excluding people who miss either the trial where causal support is the largest or the trial where causal support is smallest. We will create attention check trials specifically for these exclusions when we run our experiment (so we don't condition inclusion on the outcome we are modeling).
+Let's exclude workers who miss either the trial where causal support is the largest or the trial where causal support is smallest. We define miss as responding less than 25% (i.e., less than the normative prior) when the normative response is about 100% (i.e., when signal is maxed out).
 
 ```{r}
 exclude_df <- df %>%
   group_by(workerId) %>%
   summarise(
-    max_trial_idx = which(causal_support == max(causal_support)),
-    max_trial_gt = ground_truth[[max_trial_idx]],
-    max_trial_err = abs_err[[max_trial_idx]],
-    min_trial_idx = which(causal_support == min(causal_support)),
-    min_trial_gt = ground_truth[[min_trial_idx]],
-    min_trial_err = abs_err[[min_trial_idx]],
-    exclude = max_trial_err > 0.5 | min_trial_err > 0.5
+    max_trial_idx = which(trial_idx == -1)[1],
+    max_trial_response_D = response_D[[max_trial_idx]],
+    exclude = max_trial_response_D < 20
   )
+  
 
 head(exclude_df)
 ```
+What proportion of workers are missing this attention check?
 
-<!-- Apply the exclusion criteria. -->
+```{r}
+sum(exclude_df$exclude) / length(exclude_df$exclude)
+```
 
-<!-- ```{r} -->
-<!-- df = exclude_df %>% -->
-<!--   select(workerId, exclude) %>% -->
-<!--   full_join(df, by = "workerId") %>% -->
-<!--   filter(!exclude) %>% -->
-<!--   select(-exclude) -->
-<!-- ``` -->
+Apply the exclusion criteria.
+
+```{r}
+df = exclude_df %>%
+  select(workerId, exclude) %>%
+  full_join(df, by = "workerId") %>%
+  filter(!exclude) %>%
+  select(-exclude)
+```
+
+How many participants per condition after exclusions? (target sample size was 80 per condition)
+
+```{r}
+df %>%
+  group_by(condition) %>%
+  summarise(
+    n = length(unique(workerId))
+  )
+```
 
 
 ### Performance
@@ -95,9 +119,9 @@ df %>%
     facet_grid(n ~ .)
 ```
 
-What we see in these plots is subtle but interesting. The absolute error in the icons condition seems to increase with sample size such that error is lower on average in the icons condition than in the text condition at low sample size, but this reverses at very large sample size. This is consistent with perceptual distortions in number sense being different with different visualization formats.
+Absolute error seems to get higher as sample size increases consistent with experiment 1. It looks like aggbars, bars, and icons have slightly lower average absolute error at larger sample size.
 
-Perhaps more striking, absolute error is very high. I have some concern that people don't understand the response scale.
+Overall, absolute error is very high. This is probably a realistic reflection of the task difficulty for causal inferences.
 
 #### Responses vs ground truth
 
@@ -105,14 +129,14 @@ Let's see if we can make better sense of the results by looking at raw responses
 
 ```{r}
 df %>% 
-  ggplot(aes(x = ground_truth, y = response_A)) +
-    geom_point() +
+  ggplot(aes(x = ground_truth, y = response_D)) +
+    geom_point(alpha = 0.4) +
     geom_abline(slope = 100, intercept = 0, color = "red") +
     theme_bw() +
     facet_grid(n ~ condition)
 ```
 
-We expect to see an inverse S-shaped pattern here (i.e., a linear in log odds pattern with a slope less than one, at least above `ground_truth = 0.5`). To some extent, this is what we see here, but the responses are very noisy. As expected there is some asymmetry above and below `ground_truth = 0.5`. This makes sense given that judging the absence of evidence (i.e., ground truth closer to 0) relies on a more ambiguous visual cue than judging that the treatment is effective (i.e., ground truth closer to 1). 
+We expect to see an inverse S-shaped pattern here (i.e., a linear in log odds pattern with a slope less than one, at least above `ground_truth = 0.5`). We see this pattern here, but the responses are noisy. 
 
 We expect a linear model to fit these data well in log odds units, so lets sanity check this intuition by looking at causal support (i.e., `logit(ground_truth))` vs the log ratio of responses.
 
@@ -130,91 +154,124 @@ df = df %>%
       if_else(
         response_B < 0.5, 0.5,
         as.numeric(response_B))),
+    response_C = if_else(
+      response_C > 99.5, 99.5,
+      if_else(
+        response_C < 0.5, 0.5,
+        as.numeric(response_C))),
+    response_D = if_else(
+      response_D > 99.5, 99.5,
+      if_else(
+        response_D < 0.5, 0.5,
+        as.numeric(response_D))),
     # calculate log response ratio
-    lrr = log(response_A / 100) - log(response_B / 100)
+    lrr = log(response_D / 100) - log(response_A / 100 + response_B / 100 + response_C / 100),
+    lrr_d = log(response_B / 100 + response_D / 100) - log(response_A / 100 + response_C / 100),
+    lrr_t = log(response_C / 100 + response_D / 100) - log(response_A / 100 + response_B / 100)
   )
 ```
 
 ```{r}
 df %>%
   ggplot(aes(x = causal_support, y = lrr)) +
-    geom_point() +
+    geom_point(alpha = 0.4) +
     geom_abline(slope = 1, intercept = 0, color = "red") +
     coord_cartesian(
-      xlim = c(-20, 35),
-      ylim = c(-20, 35)
+      xlim = c(-10, 25),
+      ylim = c(-10, 25)
     ) +
     theme_bw() +
     facet_grid(n ~ condition)
 ```
-
-
-This doesn't look as informative as I'd like because the sampling of the ground truth is so heavily influenced by sample size. Let's look at each level of sample size on it's own axis scale.
+Let's see that smaller sample size on it's own axis scale.
 
 ```{r}
-df %>% 
+df %>%
   filter(n == 100) %>%
   ggplot(aes(x = causal_support, y = lrr)) +
-    geom_point() +
+    geom_point(alpha = 0.4) +
     geom_abline(slope = 1, intercept = 0, color = "red") +
     coord_cartesian(
-      xlim = c(-4, 4),
-      ylim = c(-4, 4)
+      xlim = c(-10, 10),
+      ylim = c(-10, 10)
     ) +
     theme_bw() +
     facet_grid(n ~ condition)
+```
+
+It seems clear that slopes will be less than 1 in logit-logit coordinate space at the larger sample size and closer to 1 at smaller sample size. This is what we expect to see if people are insensitive to sample size---greater underestimation error at larger sample size.
+
+It's hard to see other patterns (e.g., differences in slopes between conditions) without a model.
+
+#### Responsiveness to delta p
+
+Above we're getting a pretty good sense of how workers respond to sample size. But what about how they respond to the other signals in the visualization? 
+
+Let *delta p disease* be the difference in the proportion of people with disease given gene vs no gene.
+
+Let *delta p treatment* be the difference in the proportion of people with disease given treatment and gene vs no gene.
+
+```{r}
+df <- df %>%
+  mutate(
+    delta_p_d = (count_nGnT + count_nGT) / (total_nGnT + total_nGT) - (count_GnT + count_GT) / (total_GnT + total_GT),
+    delta_p_t = count_nGT / total_nGT - count_GT / total_GT
+  )
+```
+
+Let's look at log response ratios (lrr, defined above) representing the user's response to each of these signals.
+
+To the extent that users are sensitive to these signals, lrrs should increase as delta p values go down
+
+```{r}
+df %>%
+  ggplot(aes(x = delta_p_d, y = lrr_d)) +
+  geom_point(alpha = 0.4) +
+  theme_bw() +
+  facet_grid(n ~ condition)
 ```
 
 ```{r}
-df %>% 
-  filter(n == 500) %>%
-  ggplot(aes(x = causal_support, y = lrr)) +
-    geom_point() +
-    geom_abline(slope = 1, intercept = 0, color = "red") +
-    coord_cartesian(
-      xlim = c(-6, 6),
-      ylim = c(-6, 6)
-    ) +
-    theme_bw() +
-    facet_grid(n ~ condition)
+df %>%
+  ggplot(aes(x = delta_p_t, y = lrr_t)) +
+  geom_point(alpha = 0.4) +
+  theme_bw() +
+  facet_grid(n ~ condition)
+```
+
+People seem sensitive to these signals in that the overal trend on each scatterplot seems to be a negative slope. Though their responses are not a perfect function of the differences in proportions we show them, as expected based on Griffiths and Tenenbaum (2005).
+
+We might be able to get a better sense of users' sensitivity by comparing lrrs to normative causal support for the corresponding effects of the gene on disease and treatment, respectively.
+
+```{r}
+df %>%
+  ggplot(aes(x = causal_support_d, y = lrr_d)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  coord_cartesian(
+    xlim = c(-10, 100),
+    ylim = c(-10, 100)
+  ) +
+  theme_bw() +
+  facet_grid(n ~ condition)
 ```
 
 ```{r}
-df %>% 
-  filter(n == 1000) %>%
-  ggplot(aes(x = causal_support, y = lrr)) +
-    geom_point() +
-    geom_abline(slope = 1, intercept = 0, color = "red") +
-    coord_cartesian(
-      xlim = c(-11, 11),
-      ylim = c(-11, 11)
-    ) +
-    theme_bw() +
-    facet_grid(n ~ condition)
+df %>%
+  ggplot(aes(x = causal_support_t, y = lrr_t)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  coord_cartesian(
+    xlim = c(-5, 25),
+    ylim = c(-5, 25)
+  ) +
+  theme_bw() +
+  facet_grid(n ~ condition)
 ```
 
-```{r}
-df %>% 
-  filter(n == 5000) %>%
-  ggplot(aes(x = causal_support, y = lrr)) +
-    geom_point() +
-    geom_abline(slope = 1, intercept = 0, color = "red") +
-    coord_cartesian(
-      xlim = c(-35, 35),
-      ylim = c(-35, 35)
-    ) +
-    theme_bw() +
-    facet_grid(n ~ condition)
-```
+The functional relationship between causal support and lrrs for each component of the signal in these charts (i.e., the gene effects on disease and treatment, respectively) looks to be linear in log odds as expected. The overall pattern of sensitivity seems similar to users' sensitivity to confounding, which is good to see because it means we can flexibly define causal support for inferences about different arrows or sets of arrows in the DAGs that users allocated probabilities to.
 
-It seems clear that slopes will be less than 1 in logit-logit coordinate space and that slopes are different on either side of `causal_support = 0`. This means that to fit these responses on this scale we're going to want a piecewise function, similar to models of utility that treat the perception of gains and losses differently. 
-
-One thing that stands out on these charts is that **the ability to discriminate signal decreases at higher sample size**. Although we expect to see people underestimate sample size, the logit-logit slope flattening out as the weight of evidence increases is an interesting pattern.
-
-Also, notice that at small sample sizes the slope is much steeper below `causal_support = 0` than above. This suggests that our piecewise slopes should interact with sample size, probably with a random effects component to account for the way that this varies from person to person.
-
-The level of response noise is concerning to me. For example, when `n = 100` and `condition = 'text'` there are many log response ratios on the wrong side of 0 (i.e., responses on the wrong side of 50%). We might want to use some sort of a attention check to exclude participants who didn't get the task or were responding randomly.
-
+Interestingly people seem more sensitive to the impact of disease on treatment than the marginal effect of gene on the rate of disease. This is to be expected in the bars, icons, and text condition where the marginal effect is not directly shown (i.e., users must imagine aggregating across levels of treatment in the contingency table). However, in the aggbars condition, users can collapse across levels of treatment and actually see the marginal effect of gene on disease. Maybe we will see different sensitivity to this counterfactual pattern among users who interacted with aggbars? For filtbars, the effect of gene on treatment requires more clicks to investigate than the effect of gene on disease, so it is surprising to see that this users seem more sensitive to the former. We'll did deeping into this apparent pattern when we fit linear in log odds models to our data.
 
 ### Response times
 
@@ -222,7 +279,8 @@ Let's see a histogram of response times per trial. These are measured in seconds
 
 ```{r}
 df %>%
-  ggplot(aes(x = trial_dur)) +
+  filter(trial_dur >= 0) %>%
+  ggplot(aes(x = log(trial_dur))) +
    geom_histogram() +
     theme_bw()
 ```
@@ -233,27 +291,184 @@ Let's separate this by condition to see if icons or text is taking systematicall
 
 ```{r}
 df %>%
-  ggplot(aes(x = trial_dur)) +
+  filter(trial_dur >= 0) %>%
+  ggplot(aes(x = log(trial_dur))) +
     geom_histogram() +
     theme_bw() +
     facet_grid(condition ~ .)
 ```
 
-These distributions look similar. Maybe icons take slightly less time on the median trial.
+These distributions look similar.
 
-What about the duration of the experiment per participant?
+What about the duration of the experiment per participant? We filter to durations within an hour because Mechanical Turk workers tend to leave browser windows open. This is a very noisy measure.
 
 ```{r}
 df %>%
+  filter(duration >= 0) %>%
   filter(trial == 1) %>%
-  ggplot(aes(x = duration)) +
+  ggplot(aes(x = log(duration))) +
     geom_histogram() +
     theme_bw() +
     facet_grid(condition ~ .)
 ```
 
-Again these, look pretty similar. Honestly the response time data is not too interesting, but it's worth checking.
+Durations seem mostly similar. Honestly the response time data is not too interesting, but it's worth checking.
 
+
+### Interactions
+
+Let's analyze how users interacted with the aggbars and filtbars visualization conditions, respectively. 
+
+We'll start by writing functions to reconstruct the state of each visualization on each trial based on interaction logs.
+
+```{r}
+reconstruct_state_aggbars <- function(interactions) {
+  # starting state is conditioning on both gene and treatment
+  states <- list("gene_treat_init")
+  
+  for(i in 1:length(interactions)) {
+    if (interactions[i] == "collapseRow" & str_detect(states[length(states)], "^gene_treat")) {
+      states <- append(states, list("treat"))
+    } else if (interactions[i] == "collapseRow" & states[length(states)] == "gene") {
+      states <- append(states, list("none"))
+    } else if (interactions[i] == "expandRow" & states[length(states)] == "treat") {
+      states <- append(states, list("gene_treat"))
+    } else if (interactions[i] == "expandRow" & states[length(states)] == "none") {
+      states <- append(states, list("gene"))
+    } else if (interactions[i] == "collapseCol" & str_detect(states[length(states)], "^gene_treat")) {
+      states <- append(states, list("gene"))
+    } else if (interactions[i] == "collapseCol" & states[length(states)] == "treat") {
+      states <- append(states, list("none"))
+    } else if (interactions[i] == "expandCol" & states[length(states)] == "gene") {
+      states <- append(states, list("gene_treat"))
+    } else if (interactions[i] == "expandCol" & states[length(states)] == "none") {
+      states <- append(states, list("treat"))
+    } 
+  }
+  
+  return(unlist(states))
+}
+```
+
+```{r}
+reconstruct_state_filtbars <- function(interactions) {
+  # starting state is conditioning on nothing
+  states <- list("none_init")
+  curr <- "" # state is a chain of filters
+  
+  for(i in 1:length(interactions)) {
+    if (interactions[i] == "clearFilters") {
+      curr <- ""
+      states <- append(states, list("none"))
+    } else if (str_detect(interactions[i], "^filter") & str_detect(states[length(states)], "^none")) {
+      # first filter
+      curr <- sub("^filter", "", interactions[i])
+      states <- append(states, list(curr))
+    } else if (str_detect(interactions[i], "^filter") & !str_detect(curr, paste(".*", sub("^filter", "", interactions[i]), ".*", sep = ""))) { 
+      # only add interactions not already in the chain (don't log duplicate filters which do not change the state)
+      # put chain of filters including the current one into consistent order (so string matching can identify unique states)
+      curr <- pmap_chr(list(curr, sub("^filter", "", interactions[i])), ~paste(sort(c(...)), collapse = "_"))
+      states <- append(states, list(curr))
+    }
+  }
+  
+  return(unlist(states))
+}
+```
+
+Now, we'll reconstruct the states visited on each trial for each visualization separately.
+
+```{r}
+aggbars_df <- df %>% 
+  filter(condition == "aggbars") %>%
+  rowwise() %>%
+  mutate(
+    interactions = str_split(interactions, "_"),
+    state = list(reconstruct_state_aggbars(interactions))
+  )
+```
+
+```{r}
+filtbars_df <- df %>% 
+  filter(condition == "filtbars") %>%
+  rowwise() %>%
+  mutate(
+    interactions = str_split(interactions, "_"),
+    state = list(reconstruct_state_filtbars(interactions))
+  )
+```
+
+Let's view histograms of the states visited by users of aggbars and filtbars.
+
+```{r}
+aggbars_df %>%
+  group_by(trial, workerId) %>%
+  unnest(cols = c("state")) %>%
+  ggplot(aes(y = state)) +
+  geom_bar() +
+  theme_bw()
+```
+
+We can see that aggbars users create views conditioning on treatment slightly more than they create views conditioning on gene. Perhaps users collapse across levels of gene (i.e., conditioning on treatment only) as a way of investigating whether gene seems ignorable.
+
+```{r}
+filtbars_df %>%
+  group_by(trial, workerId) %>%
+  unnest(cols = c("state")) %>%
+  ggplot(aes(y = state)) +
+  geom_bar() +
+  theme_bw()
+```
+
+We can see that users of filtbars tend to condition on gene often and are about as likely to condition on no gene and Gene_Treatment as they are to condition on treatment. Users condition on NoGene_Treatment slightly less often; maybe this signal is not completely necessary in order to see the impact of gene on treatment.
+
+For both aggbars and filtbars, let's see what proportion of users create views that should be most helpful for the task.
+
+For aggbars this means intentionally creating views that condition on gene, which we see in about 13% of trials.
+
+```{r}
+aggbars_df <- aggbars_df %>% 
+  mutate(
+    condition_on_gene = any(str_detect(unlist(state), "^gene*") & !str_detect(unlist(state), "^gene_treat_init$"))
+  )
+
+sum(aggbars_df$condition_on_gene) / length(aggbars_df$condition_on_gene)
+```
+
+For aggbars, it seems like more users condition on treatment slightly more than gene. Maybe they are looking at whether grouping by or collapsing across gene makes a difference in the proportion of people with disease. Although this is kind of a roundabout way of checking for signal of a marginal effect, it probably does give an intuitive sense of whether gene seems to impact other factors. What proportion of trials to aggbars users intentionally create views that condition on treat (after seeing an initial disaggregated view conditioning on both gene and treat)? Looks like about 12% of trials.
+
+```{r}
+aggbars_df <- aggbars_df %>% 
+  mutate(
+    condition_on_treat = any(str_detect(unlist(state), "^treat$"))
+  )
+
+sum(aggbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
+```
+
+For filtbars creating the most task-relevant views means intentionally creating views that condition on both gene and no gene, which we see in about 27% of trials.
+
+```{r}
+filtbars_df <- filtbars_df %>% 
+  mutate(
+    condition_on_gene_nogene = any(str_detect(unlist(state), "^Gene*")) & any(str_detect(unlist(state), "^NoGene*"))
+  )
+
+sum(filtbars_df$condition_on_gene_nogene) / length(filtbars_df$condition_on_gene_nogene)
+```
+
+For filtbars, it seems like more users condition on gene than no gene, and more condition on Gene_Treatment than NoGene_Treatment. Maybe they are comparing the subset of data where people have the gene to the overall data. Although this is not as rigorous as conditioning on both gene and no gene in turn, it shows task relevant signal. What proportion of trials to filtbars users intentionally create views that condition on gene? Looks like about 49% of trials.
+
+```{r}
+filtbars_df <- filtbars_df %>% 
+  mutate(
+    condition_on_gene = any(str_detect(unlist(state), "^Gene*"))
+  )
+
+sum(filtbars_df$condition_on_gene) / length(filtbars_df$condition_on_gene)
+```
+
+Users of filtbars create the most task-relevant views of the data more often than aggbars users. They also interact with the visualization much more frequently overall.
 
 ### Demographics
 
@@ -278,7 +493,9 @@ df %>%
     theme_bw()
 ```
 
-Let's also check out age...
+Our sample is pretty gender biased, but this is a better gender balance than in E1.
+
+Let's also check out age.
 
 ```{r}
 df %>%
@@ -288,7 +505,9 @@ df %>%
     theme_bw()
 ```
 
-... and education.
+Our sample skews toward younger people as in E1.
+
+What about education?
 
 ```{r}
 df %>%
@@ -297,6 +516,8 @@ df %>%
     geom_bar() + 
     theme_bw()
 ```
+
+Lots of college educated MTurk workers as in E1. This is probably a good thing for our study since we are studying how people do data analysis, and analysts tend to be college educated.
 
 Last, let's look at chart use.
 
@@ -312,15 +533,24 @@ df %>%
 
 Education and chart use are the only demographic variables that we collected which I would expect to have an impact on performance.
 
-Let's check out the relationships of those variables with avg absolute error. (These charts no longer work after exclusions because, we don't have enough data.)
+Let's check out the relationships of those variables with avg absolute error.
 
 ```{r}
 df %>% 
+  group_by(education) %>%
+  summarise(
+    count = length(unique(workerId)),
+    workerId = list(workerId),
+    abs_err = list(abs_err)
+  ) %>%
+  unnest(cols = c("workerId", "abs_err")) %>%
   group_by(workerId, education) %>%
   summarise(
-    avg_abs_err = mean(abs_err)
+    avg_abs_err = mean(abs_err),
+    count = unique(count)
   ) %>%
   ungroup() %>%
+  filter(count > 10) %>%
   ggplot(aes(x = avg_abs_err, y = education)) +
     stat_eyeh() +
     geom_point(position = position_jitter(), alpha = 0.5) +
@@ -335,8 +565,10 @@ df %>%
   ) %>%
   ungroup() %>%
   ggplot(aes(x = avg_abs_err, y = chart_use)) +
-    stat_eye() +
+    stat_eyeh() +
     geom_point(position = position_jitter(), alpha = 0.5) +
     theme_bw()
 ```
+
+These conditional distributions are mostly overlapping. People with a doctorate tend to have lower absolute error, but also this is a relatively small subset of our participants such that a strong statistical inference about this may not be warranted.
 

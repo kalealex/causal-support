@@ -401,15 +401,15 @@ For filtbars this means intentionally creating views that condition on both trea
 ```{r}
 filtbars_df <- filtbars_df %>% 
   mutate(
-    condition_on_treat = any(str_detect(unlist(state), "^Treatment$")) & any(str_detect(unlist(state), "^NoTreatment$"))
+    condition_on_treat_notreat = any(str_detect(unlist(state), "^Treatment$")) & any(str_detect(unlist(state), "^NoTreatment$"))
   )
 
-sum(filtbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
+sum(filtbars_df$condition_on_treat_notreat) / length(filtbars_df$condition_on_treat_notreat)
 ```
 
 Users seem to create task-relevant views of the data similarly often in both interactive conditions.
 
-For filtbars, it seems like more users condition on treatment than no treatment. Maybe they are comparing the subset of data where people receive treatment to the overall data. Although this is not as rigorous as conditioning on both treatment and no treatment in turn, it shows task relevant signal. What proportion of trials to filtbars users intentionally create views that condition on treatment? Looks like about 48% of trials.
+For filtbars, it seems like more users condition on treatment than no treatment. Maybe they are comparing the subset of data where people receive treatment to the overall data. Although this is not as rigorous as conditioning on both treatment and no treatment in turn, it shows task relevant signal. What proportion of trials to filtbars users intentionally create views that condition on treatment? Looks like about 49% of trials.
 
 ```{r}
 filtbars_df <- filtbars_df %>% 
@@ -417,7 +417,7 @@ filtbars_df <- filtbars_df %>%
     condition_on_treat = any(str_detect(unlist(state), "^Treatment$"))
   )
 
-sum(filtbars_df$condition_on_treat) / length(aggbars_df$condition_on_treat)
+sum(filtbars_df$condition_on_treat) / length(filtbars_df$condition_on_treat)
 ```
 
 

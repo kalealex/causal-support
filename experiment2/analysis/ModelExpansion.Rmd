@@ -1,5 +1,5 @@
 ---
-title: "Model Expansion"
+title: "E2: Model Expansion"
 author: "Alex Kale"
 date: "`r Sys.Date()`"
 output: html_document
@@ -20,7 +20,7 @@ library(RColorBrewer)
 Load data.
 
 ```{r}
-df <- read_csv("pilot-anonymous.csv")
+df <- read_csv("e2-anonymous.csv")
 
 head(df)
 ```
@@ -31,7 +31,10 @@ Calculate a log response ratio `lrr` to model as a function of `causal_support`.
 model_df <- df %>%
   # drop practice trial
   filter(trial != "practice") %>%
-  unite("vis", condition, interact, sep = "_") %>%
+  # drop bad batches of filtbars data
+  filter(condition != "filtbars" | batch > 61) %>% 
+  # drop one participant who is missing an attention check trial for some reason
+  filter(!workerId %in% c("00163888")) %>%
   mutate(
     # response units
     response_A =  if_else(
@@ -47,13 +50,66 @@ model_df <- df %>%
     lrr = log(response_A / 100) - log(response_B / 100),
     # predictors as factors
     worker = as.factor(workerId),
-    vis = as.factor(vis),
+    condition = as.factor(condition),
     n = as.factor(n),
     # derived predictors
-    delta_p = (C + D)/(nC + nD) - (A + B)/(nA + nB)
-  ) 
+    delta_p = (count_nGnT + count_GnT)/(total_nGnT + total_GnT) - (count_nGT + count_GT)/(total_nGT + total_GT),
+    interactions = if_else(interactions == "placeholder", list(NA), str_split(interactions, "_")),
+    trial = as.numeric(trial),
+    trial_n = (trial - mean(trial)) / max(trial) # normalized trial indices
+  ) %>%
+  rowwise() %>%
+  # boolean to code for any interaction whatsoever
+  mutate(interact = !any(is.na(unlist(interactions)))) %>% 
+  # subset trial in the interactive condition depending on whether users interact at all, treating these as different factors
+  unite("vis", condition, interact, remove = FALSE)
 ```
 
+Let's exclude workers who miss the trial where causal support is the largest. We define miss as absolute error greater than 50%. This mean conditioning on only one of our attention checks to exclude about 26% of participants, rather than conditioning on both attention checks as preregistered which would exclude 48% of participants. 48% is too much, and this reflects the fact that we underestimated the difficulty of our second attention check trial, where causal support is at a minimum. Here, we are departing from our preregistration, but we are doing so in a way that admits more noise into our sample and is thus a more conservative analysis decision than the exclusion criteria we preregistered.
+
+```{r}
+exclude_df <- model_df %>%
+  group_by(workerId) %>%
+  summarise(
+    max_trial_idx = which(trial_idx == -1)[1],
+    max_trial_gt = ground_truth[[max_trial_idx]],
+    max_trial_err = abs_err[[max_trial_idx]],
+    exclude = max_trial_err > 0.5
+  )
+
+head(exclude_df)
+```
+
+Apply the exclusion criteria.
+
+```{r}
+model_df = exclude_df %>%
+  select(workerId, exclude) %>%
+  full_join(model_df, by = "workerId") %>%
+  filter(!exclude) %>%
+  select(-exclude)
+```
+
+Additionally, we'll drop all attention check trials now that we are done using them for exclusions. Because of a bug that inserted extra attention check trials for the first 135 workers, this means dropping more trials than it should for this subset of workers. Thus, we have more trials per participant after the bug was fixed.
+
+```{r}
+model_df = model_df %>%
+  filter(trial_idx != -1 & trial_idx != -2)
+```
+
+How many participants per condition after exclusions? (target sample size was 80 per condition)
+
+```{r}
+model_df %>%
+  group_by(condition) %>%
+  summarise(
+    n = length(unique(workerId))
+  )
+```
+
+We overshot our target sample size slightly in all but two conditions. This happened because we launch HITs in batches on MTurk, and it is hard to anticipate how many people in a batch will pass the exclusion criterion. The few extra participants should not make much of a difference in our results.
+
+Now we're ready to build some models.
 
 
 ## Simple slope and intercept
@@ -63,11 +119,11 @@ Prior predictive check
 ```{r}
 p1 <- brm(data = model_df, family = "gaussian",
   lrr ~ causal_support,
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = sigma)),                   # weakly informative half-normal
   sample_prior = "only",
-  iter = 3000, warmup = 500, chains = 2, cores = 2)
+  iter = 2000, warmup = 500, chains = 2, cores = 2)
 ```
 
 ```{r}
@@ -86,12 +142,15 @@ model_df %>%
     theme(panel.grid = element_blank())
 ```
 
+It looks like there are some data points that out model thinks are implausible but not impossible. I'm guessing this is because the model specification itself is too simple to account for the data, and fiddling with the priors wouldn't completely fix it.
+
+
 Fit model
 
 ```{r}
 m1 <- brm(data = model_df, family = "gaussian",
   lrr ~ causal_support,
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = sigma)),                   # weakly informative half-normal
   iter = 3000, warmup = 500, chains = 2, cores = 2,
@@ -130,21 +189,24 @@ model_df %>%
     theme(panel.grid = element_blank())
 ```
 
+The model fit looks good by the diagnostics above, but this model is just a simple linear model on casual support. As we can see in the posterior predictive distribution, it doesn't account for the complexity of our data generating process (as it would if people's behavior was completely normative).
 
 
 ## Adding effects of data manipulations
+
+Now, we'll add predictors for our data manipulations operationalized as delta p and sample size. These are factors whose effects on judgments should be fully mediated by normative causal support in an ideal observer, but the probably have some direct impact on judgments as well in the form of perceptual biases, such as the tendency to underestimate sample size, and cognitive biases, such as misinterpreting the signal in the chart.
 
 Prior predictive check
 
 ```{r}
 p2 <- brm(data = model_df, family = "gaussian",
   lrr ~ causal_support*delta_p*n,
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 1), class = b),                        # center predictor effects at 0
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = sigma)),                   # weakly informative half-normal
   sample_prior = "only",
-  iter = 3000, warmup = 500, chains = 2, cores = 2)
+  iter = 2000, warmup = 500, chains = 2, cores = 2)
 ```
 
 ```{r}
@@ -166,12 +228,14 @@ expand_grid(
     facet_grid(n ~ .)
 ```
 
+These prior predictive distributions are already assigning more density to the empirical distribution of the data, which is a good sign.
+
 Fit model
 
 ```{r}
 m2 <- brm(data = model_df, family = "gaussian",
   lrr ~ causal_support*delta_p*n,
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 1), class = b),                        # center predictor effects at 0
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = sigma)),                   # weakly informative half-normal
@@ -191,31 +255,32 @@ plot(m2)
 
 ```{r}
 # intercepts
-pairs(m2, pars = c("b_Intercept", "b_delta_p", "b_n500", "b_n1000", "b_n5000"))
+pairs(m2, pars = c("b_Intercept", "b_delta_p", "b_n500", "b_n1000", "b_n1500"))
 ```
-
 
 ```{r}
 # slopes on causal support
-pairs(m2, pars = c("b_causal_support", "b_causal_support:delta_p", "b_causal_support:n500", "b_causal_support:n1000", "b_causal_support:n5000"))
+pairs(m2, pars = c("b_causal_support", "b_causal_support:delta_p", "b_causal_support:n500", "b_causal_support:n1000", "b_causal_support:n1500"))
 ```
 
 ```{r}
 # slopes on delta_p and sigma
-pairs(m2, pars = c("b_delta_p", "b_delta_p:n500", "b_delta_p:n1000", "b_delta_p:n5000", "sigma"))
+pairs(m2, pars = c("b_delta_p", "b_delta_p:n500", "b_delta_p:n1000", "b_delta_p:n1500", "sigma"))
 ```
 
 ```{r}
 # slope interactions
-pairs(m2, pars = c("b_causal_support:delta_p", "b_causal_support:delta_p:n500", "b_causal_support:delta_p:n1000", "b_causal_support:delta_p:n5000"))
+pairs(m2, pars = c("b_causal_support:delta_p", "b_causal_support:delta_p:n500", "b_causal_support:delta_p:n1000", "b_causal_support:delta_p:n1500"))
 ```
+
+As expected, we see some correlation among our slope effects, but it's not enough to raise alarm. It doesn't look like causal support is multicollinear with delta_p or n as it would be if these predictors were redundant.
 
 Posterior predictive
 
 ```{r}
 expand_grid(
-    causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 50))),
-    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 10))),
     n = unique(model_df$n)) %>%
   add_predicted_draws(m2, prediction = "lrr_rep", seed = 1234, n = 500) %>%
   mutate(
@@ -231,31 +296,30 @@ expand_grid(
     facet_grid(n ~ .)
 ```
 
-
-
-
-
+This model looks much better than the last one, but there are still data points that get assigned low density in the posterior predictive. This suggests we can still improve our model specification by adding other predictors to our model.
 
 
 ## Adding effects of visualization conditions
+
+Now, we'll let our model know about different visualization conditions that the participants saw and (in the two conditions where this is a relevant consideration) whether or not they interacted on a given trial. In interactive conditions, we expect to see some change in performance on trials where users actually took the time to interact with the visualization as intended.
 
 Prior predictive check
 
 ```{r}
 p3 <- brm(data = model_df, family = "gaussian",
   lrr ~ causal_support*delta_p*n*vis,
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 1), class = b),                        # center predictor effects at 0
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = sigma)),                   # weakly informative half-normal
   sample_prior = "only",
-  iter = 3000, warmup = 500, chains = 2, cores = 2)
+  iter = 2000, warmup = 500, chains = 2, cores = 2)
 ```
 
 ```{r}
 expand_grid(
-    causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 50))),
-    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 10))),
     n = unique(model_df$n),
     vis = unique(model_df$vis)) %>%
   add_predicted_draws(p3, prediction = "lrr_rep", seed = 1234, n = 500) %>%
@@ -277,7 +341,7 @@ Fit model
 ```{r}
 m3 <- brm(data = model_df, family = "gaussian",
   lrr ~ causal_support*delta_p*n*vis,
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 1), class = b),                        # center predictor effects at 0
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = sigma)),                   # weakly informative half-normal
@@ -302,7 +366,7 @@ Posterior predictive
 ```{r}
 expand_grid(
     causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
-    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 10))),
     n = unique(model_df$n),
     vis = unique(model_df$vis)) %>%
   add_predicted_draws(m3, prediction = "lrr_rep", seed = 1234, n = 500) %>%
@@ -319,9 +383,12 @@ expand_grid(
     facet_grid(n ~ vis)
 ```
 
+Addition visualization conditions seems to help account for the empirical distribution of the data, but we can probably do even better by adding some parameters to account for things like unequal variances across levels of ground truth and individual differences. In previous rounds of model expansion with data from this task, we tried to fit models with learning effects (another kind of nuisance effect), but we could not. This time around we'll skip them (especially since we aren't trying to study learning, and users receive no feedback on their performance during the task).
 
 
 ## Adding variance effects
+
+In the plots above, we can see that variance changes as causal support moves away from 0 (i.e., ground truth response moves away from 0.5). Let's tell our model that this happens by adding a submodel on sigma.
 
 Prior predictive check
 
@@ -329,19 +396,19 @@ Prior predictive check
 p4 <- brm(data = model_df, family = "gaussian",
   formula = bf(lrr ~ causal_support*delta_p*n*vis,
                sigma ~ abs(causal_support)),
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 1), class = b),                        # center predictor effects at 0
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = b, dpar = sigma),          # weakly informative half-normal
             prior(normal(0, 1), class = Intercept, dpar = sigma)), # weakly informative half-normal
   sample_prior = "only",
-  iter = 3000, warmup = 500, chains = 2, cores = 2)
+  iter = 2000, warmup = 500, chains = 2, cores = 2)
 ```
 
 ```{r}
 expand_grid(
-    causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 50))),
-    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 10))),
     n = unique(model_df$n),
     vis = unique(model_df$vis)) %>%
   add_predicted_draws(p4, prediction = "lrr_rep", seed = 1234, n = 500) %>%
@@ -358,13 +425,15 @@ expand_grid(
     facet_grid(n ~ vis)
 ```
 
-Fit model
+These look very weakly informative which is good. Don't read into the line representing the modal density. These prior predictive distributions are not fit to the data.
+
+Fit model. We tried modeling effects of vis on sigma (i.e., heterogeneity of variance), but none of these models would fit
 
 ```{r}
 m4 <- brm(data = model_df, family = "gaussian",
   formula = bf(lrr ~ causal_support*delta_p*n*vis,
-               sigma ~ abs(causal_support)),
-  prior = c(prior(normal(-0.21, 1), class = Intercept),            # center at qlogis(mean(model_df$response_A) / 100)
+               sigma ~ abs(causal_support)), #+ vis),
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),       # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 1), class = b),                        # center predictor effects at 0
             prior(normal(1, 2), class = b, coef = causal_support), # center at unbiased slope
             prior(normal(0, 1), class = b, dpar = sigma),          # weakly informative half-normal
@@ -388,7 +457,7 @@ Posterior predictive
 ```{r}
 expand_grid(
     causal_support = quantile(model_df$causal_support, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
-    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20))),
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 10))),
     n = unique(model_df$n),
     vis = unique(model_df$vis)) %>%
   add_predicted_draws(m4, prediction = "lrr_rep", seed = 1234, n = 500) %>%
@@ -405,25 +474,31 @@ expand_grid(
     facet_grid(n ~ vis)
 ```
 
+This is looking slightly better, but the difference is subtle.
 
 
 ## Adding random effects on slope and intercept
+
+Now, we'll add some relatively simple random effects per worker to our model, making it hierarchical. This will enable the model to account for individual differences and not confuse them with signal.
+
+In order for this model to fit, we need to drop the submodel on sigma that we added above. There were some divergent iterations in that model anyway, suggesting it is not the best parameterization to account for the data. It seems like the variance effects we added above might be better understood in terms of individual differences in the pattern of average responses (see model comparison using loo cross-validation below). We discovered this through trial and error.
 
 Prior predictive check. Now that we've added hierarchy we'll narrow our priors to get a bit of regularization.
 
 ```{r}
 p5 <- brm(data = model_df, family = "gaussian",
-  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support|workerId),
-               sigma ~ abs(causal_support) + (1|workerId)),# + (abs(causal_support)|workerId)),
-  prior = c(prior(normal(-0.21, 1), class = Intercept),              # center at qlogis(mean(model_df$response_A) / 100)
+  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support|workerId)),
+               # sigma ~ abs(causal_support)), #+ (1|workerId)),
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),         # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 0.5), class = b),                        # center predictor effects at 0
             prior(normal(1, 0.5), class = b, coef = causal_support), # center at unbiased slope
-            prior(normal(0, 0.2), class = b, dpar = sigma),          # weakly informative half-normal
-            prior(normal(0, 0.2), class = Intercept, dpar = sigma),  # weakly informative half-normal
+            # prior(normal(0, 0.2), class = b, dpar = sigma),          # weakly informative half-normal
+            # prior(normal(0, 0.2), class = Intercept, dpar = sigma),  # weakly informative half-normal
+            prior(normal(0, 0.5), class = sigma),                    # weakly informative half-normal
             prior(normal(0, 0.2), class = sd),                       # weakly informative half-normal
             prior(lkj(4), class = cor)),                             # avoiding large correlations
   sample_prior = "only",
-  iter = 3000, warmup = 500, chains = 2, cores = 2)
+  iter = 2000, warmup = 500, chains = 2, cores = 2)
 ```
 
 ```{r}
@@ -437,32 +512,32 @@ model_df %>%
     # transform to probability units
     response_A_rep = plogis(lrr_rep) * 100
   ) %>%
-  ggplot(aes(x = causal_support, y = response_A_rep, fill = vis)) +
-    stat_lineribbon(.width = c(0.95)) +
+  ggplot(aes(x = causal_support, y = response_A_rep)) +
+    stat_lineribbon(.width = c(0.95, 0.8, 0.5)) +
     geom_point(data = model_df, aes(y = response_A), alpha = 0.5) +
-    scale_fill_brewer(type = "qual", palette = 2) +
-    scale_color_brewer(type = "qual", palette = 2) +
+    scale_fill_brewer() +
     labs(subtitle = "Prior predictive distribution") +
     theme(panel.grid = element_blank()) +
-    facet_wrap(workerId ~ .)
+    facet_wrap(n ~ vis)
 ```
 
-Fit model. Random slope effects on sigma did not work out.
+Fit model.
 
 ```{r}
 m5 <- brm(data = model_df, family = "gaussian",
-  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support|workerId),
-               sigma ~ abs(causal_support) + (1|workerId)),# + (abs(causal_support)|workerId)),
-  prior = c(prior(normal(-0.21, 1), class = Intercept),              # center at qlogis(mean(model_df$response_A) / 100)
+  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support|workerId)),
+               # sigma ~ abs(causal_support)), #+ (1|workerId)),
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),         # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 0.5), class = b),                        # center predictor effects at 0
             prior(normal(1, 0.5), class = b, coef = causal_support), # center at unbiased slope
-            prior(normal(0, 0.2), class = b, dpar = sigma),          # weakly informative half-normal
-            prior(normal(0, 0.2), class = Intercept, dpar = sigma),  # weakly informative half-normal
-            prior(normal(0, 0.2), class = sd),                       # weakly informative half-normal
+            # prior(normal(0, 0.2), class = b, dpar = sigma),          # weakly informative half-normal
+            # prior(normal(0, 0.2), class = Intercept, dpar = sigma),  # weakly informative half-normal
+            prior(normal(0, 0.5), class = sigma),                    # weakly informative half-normal
+            prior(normal(0, 0.5), class = sd),                       # weakly informative half-normal
             prior(lkj(4), class = cor)),                             # avoiding large correlations
   iter = 3000, warmup = 500, chains = 2, cores = 2,
   control = list(adapt_delta = 0.99, max_treedepth = 12),
-  file = "model-fits/5b_re-simple")
+  file = "model-fits/5_re-simple")
 ```
 
 Diagnostics
@@ -488,38 +563,52 @@ model_df %>%
     # transform to probability units
     response_A_rep = plogis(lrr_rep) * 100
   ) %>%
-  ggplot(aes(x = causal_support, y = response_A_rep, fill = vis)) +
-    stat_lineribbon(.width = c(0.95)) +
+  ggplot(aes(x = causal_support, y = response_A_rep)) +
+    stat_lineribbon(.width = c(0.95, 0.8, 0.5)) +
     geom_point(data = model_df, aes(y = response_A), alpha = 0.5) +
-    scale_fill_brewer(type = "qual", palette = 2) +
-    scale_color_brewer(type = "qual", palette = 2) +
+    scale_fill_brewer() +
     labs(subtitle = "Posterior predictive distribution") +
     theme(panel.grid = element_blank()) +
-    facet_wrap(workerId ~ .)
+    facet_wrap(n ~ vis)
 ```
 
 
 
 ## Adding random effects for interactions of within-subjects manipulations
 
+Now, we make our random effects more complex by allowing the impacts of our within-subjects data manipulations (i.e., delta p and sample size) to vary across individuals. This tells our model that not every worker has exactly the same perceptual and cognitive biases.
+
 Same priors as before.
 
-Fit model. Full interaction of random slopes did not work.
+Fit model. We managed to fit two versions of this model with and without random effects for the interaction of delta_p and n. We choose the model without this interaction of random effects because it performs better in leave-one-out cross-validation (see Model comparison below).
 
 ```{r}
-m6 <- brm(data = model_df, family = "gaussian",
-  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support:delta_p + causal_support:n|workerId), #+ (causal_support*delta_p*n|workerId),
-               sigma ~ abs(causal_support) + (1|workerId)),
-  prior = c(prior(normal(-0.21, 1), class = Intercept),              # center at qlogis(mean(model_df$response_A) / 100)
+m6a <- brm(data = model_df, family = "gaussian",
+  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support*delta_p + causal_support*n|workerId)),
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),         # center at mean(qlogis(model_df$response_A / 100))
             prior(normal(0, 0.5), class = b),                        # center predictor effects at 0
             prior(normal(1, 0.5), class = b, coef = causal_support), # center at unbiased slope
-            prior(normal(0, 0.2), class = b, dpar = sigma),          # weakly informative half-normal
-            prior(normal(0, 0.2), class = Intercept, dpar = sigma),  # weakly informative half-normal
-            prior(normal(0, 0.2), class = sd),                       # weakly informative half-normal
+            prior(normal(0, 0.5), class = sigma),                    # weakly informative half-normal
+            prior(normal(0, 0.5), class = sd),                       # weakly informative half-normal
             prior(lkj(4), class = cor)),                             # avoiding large correlations
   iter = 3000, warmup = 500, chains = 2, cores = 2,
   control = list(adapt_delta = 0.99, max_treedepth = 12),
-  file = "model-fits/6_re-data_conds")
+  file = "model-fits/6a_re-within")
+m6 <- m6a
+```
+
+```{r}
+m6b <- brm(data = model_df, family = "gaussian",
+  formula = bf(lrr ~ causal_support*delta_p*n*vis + (causal_support*delta_p*n|workerId)),
+  prior = c(prior(normal(-0.2428809, 1), class = Intercept),         # center at mean(qlogis(model_df$response_A / 100))
+            prior(normal(0, 0.5), class = b),                        # center predictor effects at 0
+            prior(normal(1, 0.5), class = b, coef = causal_support), # center at unbiased slope
+            prior(normal(0, 0.5), class = sigma),                    # weakly informative half-normal
+            prior(normal(0, 0.5), class = sd),                       # weakly informative half-normal
+            prior(lkj(4), class = cor)),                             # avoiding large correlations
+  iter = 3000, warmup = 500, chains = 2, cores = 2,
+  control = list(adapt_delta = 0.99, max_treedepth = 12),
+  file = "model-fits/6b_re-within")
 ```
 
 Diagnostics
@@ -545,23 +634,21 @@ model_df %>%
     # transform to probability units
     response_A_rep = plogis(lrr_rep) * 100
   ) %>%
-  ggplot(aes(x = causal_support, y = response_A_rep, fill = vis)) +
-    stat_lineribbon(.width = c(0.95)) +
+  ggplot(aes(x = causal_support, y = response_A_rep)) +
+    stat_lineribbon(.width = c(0.95, 0.8, 0.5)) +
     geom_point(data = model_df, aes(y = response_A), alpha = 0.5) +
-    scale_fill_brewer(type = "qual", palette = 2) +
-    scale_color_brewer(type = "qual", palette = 2) +
+    scale_fill_brewer() +
     labs(subtitle = "Posterior predictive distribution") +
     theme(panel.grid = element_blank()) +
-    facet_wrap(workerId ~ .)
+    facet_wrap(n ~ vis)
 ```
-
 
 
 
 ## Model comparison
 
 ```{r}
-loo(m1, m2, m3, m4, m5, m6)
+loo(m1, m2, m3, m4, m5, m6a, m6b)
 ```
 
 
@@ -572,11 +659,11 @@ Derive linear in log odds slopes
 
 ```{r}
 slopes_df <- model_df %>%
-  group_by(n, vis, workerId) %>%
+  group_by(n, vis) %>%
   data_grid(
     causal_support = c(0, 1),
     delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20)))) %>%
-  add_fitted_draws(m5, value = "lrr_rep", seed = 1234, n = 500) %>%
+  add_fitted_draws(m6, value = "lrr_rep", seed = 1234, n = 500, re_formula = NA) %>%
   compare_levels(lrr_rep, by = causal_support) %>%
   rename(slope = lrr_rep)
 ```
@@ -585,12 +672,11 @@ Effect of sample size
 
 ```{r}
 slopes_df %>%
-  group_by(n, .draw) %>%                     # group by predictors to keep
+  group_by(n, .draw) %>%                      # group by predictors to keep
   summarise(slope = weighted.mean(slope)) %>% # marginalize out delta_p and vis effects
-  ggplot(aes(x = slope, y = "")) +
-    stat_halfeyeh() +
-    theme_bw() +
-    facet_grid(n ~ .)
+  ggplot(aes(x = n, y = slope)) +
+    stat_halfeye() +
+    theme_bw()
 ```
 
 Interaction of visualization and sample size
@@ -599,10 +685,10 @@ Interaction of visualization and sample size
 slopes_df %>%
   group_by(n, vis, .draw) %>%                 # group by predictors to keep
   summarise(slope = weighted.mean(slope)) %>% # marginalize out delta_p effects
-  ggplot(aes(x = slope, y = vis)) +
-    stat_halfeyeh() +
+  ggplot(aes(x = n, y = slope)) +
+    stat_halfeye() +
     theme_bw() +
-    facet_grid(n ~ .)
+    facet_grid(. ~ vis)
 ```
 
 Pattern of slopes across levels of delta_p
@@ -611,7 +697,7 @@ Pattern of slopes across levels of delta_p
 slopes_df %>%
   group_by(delta_p, .draw) %>%                # group by predictors to keep
   summarise(slope = weighted.mean(slope)) %>% # marginalize out n and vis effects
-  ggplot(aes(x = slope, y = delta_p, group = .draw)) +
+  ggplot(aes(x = delta_p, y = slope, group = .draw)) +
     geom_line(alpha = 0.1) +
     theme_bw()
 ```
@@ -620,9 +706,9 @@ Interaction of visualization and delta_p
 
 ```{r}
 slopes_df %>%
-  group_by(delta_p, vis, .draw) %>%                # group by predictors to keep
-  summarise(slope = weighted.mean(slope)) %>% # marginalize out n and vis effects
-  ggplot(aes(x = slope, y = delta_p, group = .draw)) +
+  group_by(delta_p, vis, .draw) %>%           # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>% # marginalize out n effects
+  ggplot(aes(x = delta_p, y = slope, group = .draw)) +
     geom_line(alpha = 0.1) +
     theme_bw() + 
     facet_grid(. ~ vis)
@@ -632,11 +718,69 @@ Effect of visualization
 
 ```{r}
 slopes_df %>%
-  group_by(vis, .draw) %>%                 # group by predictors to keep
-  summarise(slope = weighted.mean(slope)) %>% # marginalize out delta_p effects
-  ggplot(aes(x = slope, y = vis)) +
-    stat_halfeyeh() +
+  group_by(vis, .draw) %>%                    # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>% # marginalize out delta_p and n effects
+  ggplot(aes(x = vis, y = slope)) +
+    stat_halfeye() +
     theme_bw()
 ```
 
+Let's look at contrast to see reliability of these visualization effects. We'll flip the coordinates so we have more space to put the labels for each pairwise difference.
 
+```{r}
+slopes_df %>%
+  group_by(vis, .draw) %>%                    # group by predictors to keep
+  summarise(slope = weighted.mean(slope)) %>% # marginalize out delta_p and n effects
+  compare_levels(slope, by = vis) %>%
+  ggplot(aes(x = slope, y = vis)) +
+    stat_halfeyeh() +
+    theme_bw() +
+    labs(
+      x = "Slope diff",
+      y = "Contrast"
+    )
+```
+
+
+## LLO intercepts (i.e., average response bias)
+
+Calculate intercepts.
+
+Derive linear in log odds slopes
+
+```{r}
+intercepts_df <- model_df %>%
+  group_by(n, vis) %>%
+  data_grid(
+    causal_support = 0,
+    delta_p = quantile(model_df$delta_p, probs = plogis(seq(from = qlogis(0.001), to = qlogis(0.999), length.out = 20)))) %>%
+  add_fitted_draws(m6, value = "lrr_rep", seed = 1234, n = 500, re_formula = NA) %>%
+  rename(intercept = lrr_rep)
+```
+
+Let's compare the average response where both explanations were equally likely per condition. The red line represents the ground truth.
+
+```{r}
+intercepts_df %>%
+  group_by(vis, .draw) %>%                            # group by predictors to keep
+  summarise(intercept = weighted.mean(intercept)) %>% # marginalize out delta_p and n effects
+  ggplot(aes(x = vis, y = intercept)) +
+    stat_halfeye() +
+    geom_hline(yintercept = qlogis(0.5), color = "red") +
+    theme_bw()
+```
+
+There is a significant bias in responses in every condition but filtbars. Let's convert this back to response units to inspect the magnitude of these effects.
+
+```{r}
+intercepts_df %>%
+  group_by(vis, .draw) %>%                            # group by predictors to keep
+  summarise(intercept = weighted.mean(intercept)) %>% # marginalize out delta_p and n effects
+  mutate(response_A_rep = plogis(intercept) * 100) %>%
+  ggplot(aes(x = vis, y = response_A_rep)) +
+    stat_halfeye() +
+    geom_hline(yintercept = 50, color = "red") +
+    theme_bw()
+```
+
+These biases in responses when there is no signal in favor of either causal explanation are substantial. Even though they aren't a preregistered comparison, we're probably going to want to report on them because these effects are large enough to be important.
