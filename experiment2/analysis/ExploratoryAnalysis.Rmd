@@ -45,7 +45,7 @@ df = df %>% filter(trial != "practice")
 
 ### Exclusions
 
-Let's exclude workers who miss either the trial where causal support is the largest or the trial where causal support is smallest. We define miss as responding less than 25% (i.e., less than the normative prior) when the normative response is about 100% (i.e., when signal is maxed out).
+Let's exclude workers who miss either the trial where causal support is the largest. In our preregistration, we defined a miss as responding less than 25% (i.e., less than the normative prior) when the normative response is about 100% (i.e., when signal is maxed out). However, this criterion seems to strict since it excludes 39% of our sample. We decided to relax the criterion to exclude only users who answered less than 20%, essentially allowing for 5% response error and dropping our exclusion rate to 26% similar to E1.
 
 ```{r}
 exclude_df <- df %>%
@@ -75,7 +75,7 @@ df = exclude_df %>%
   select(-exclude)
 ```
 
-How many participants per condition after exclusions? (target sample size was 80 per condition)
+How many participants per condition after exclusions? (target sample size was 100 per condition)
 
 ```{r}
 df %>%
@@ -85,6 +85,7 @@ df %>%
   )
 ```
 
+We overshot our target sample size slightly in all conditions. This happened because we launch HITs in batches on MTurk, and it is hard to anticipate how many people in a batch will pass the exclusion criterion. The few extra participants should not make much of a difference in our results.
 
 ### Performance
 

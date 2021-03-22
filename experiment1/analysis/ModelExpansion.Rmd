@@ -518,7 +518,7 @@ model_df %>%
     scale_fill_brewer() +
     labs(subtitle = "Prior predictive distribution") +
     theme(panel.grid = element_blank()) +
-    facet_wrap(n ~ vis)
+    facet_grid(n ~ vis)
 ```
 
 Fit model.
@@ -569,7 +569,7 @@ model_df %>%
     scale_fill_brewer() +
     labs(subtitle = "Posterior predictive distribution") +
     theme(panel.grid = element_blank()) +
-    facet_wrap(n ~ vis)
+    facet_grid(n ~ vis)
 ```
 
 
@@ -640,7 +640,7 @@ model_df %>%
     scale_fill_brewer() +
     labs(subtitle = "Posterior predictive distribution") +
     theme(panel.grid = element_blank()) +
-    facet_wrap(n ~ vis)
+    facet_grid(n ~ vis)
 ```
 
 
