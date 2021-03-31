@@ -695,3 +695,22 @@ sum(filtbars_df$condition_on_gene) / length(filtbars_df$condition_on_gene)
 
 Users of filtbars create the most task-relevant views of the data more often than aggbars users. They also interact with the visualization much more frequently overall. Perhaps the greater heterogeneity and lower frequency of interactive queries with aggbars helps to explain why interacting with aggbars seems to make sensitivity worse on average, whereas interacting with filtbars does seem to improve sensitivity.
 
+
+### Confidence
+
+We also collected overall confidence ratings from participants at the end of the experiment. Let's look at conidence as a function of the average absolute error across trials for each participant.
+
+```{r}
+model_df %>%
+  group_by(workerId) %>%
+  summarise(
+    avg_abs_err = mean(abs_err),
+    confidence = unique(as.factor(confidence)),
+    vis = unique(vis)
+  ) %>%
+  ggplot(aes(x = avg_abs_err, y = confidence)) +
+  stat_dotsh() + 
+  theme_bw()
+```
+
+We can see that absolute error is consistently high at all levels of confidence. This suggests that workers did not know how to guage their performance on the task.
