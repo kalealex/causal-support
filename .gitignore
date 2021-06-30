@@ -10,3 +10,6 @@ experiment2/*.pdf
 components/
 ModelExpansion_files/
 supplement*
+*.zip
+submission/
+revision/
